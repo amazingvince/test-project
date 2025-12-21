@@ -30,7 +30,7 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.formatting_distill import (
+from src.distill.formatting_distill import (
     DISTILLATION_PROMPT_TEMPLATE,
     DISTILLATION_RESPONSE_TEMPLATE,
 )
@@ -164,7 +164,7 @@ def stream_positions(
     seed: int = 42,
 ) -> None:
     try:
-        from src.data_processing import stream_game_positions, stream_puzzle_positions
+        from src.utils.data_processing import stream_game_positions, stream_puzzle_positions
     except ImportError as exc:
         raise ImportError("datasets is not installed (required for streaming).") from exc
 
@@ -200,7 +200,7 @@ def stream_positions(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Tokenizer + stream sanity check")
-    parser.add_argument("--config", type=str, default="configs/config_distill.yaml")
+    parser.add_argument("--config", type=str, default="configs/distill/config_distill.yaml")
     parser.add_argument("--samples-per-source", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()

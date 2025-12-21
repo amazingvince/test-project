@@ -12,14 +12,15 @@ Key optimizations:
 - Greedy decoding (faster than sampling)
 
 Usage:
-    python evaluate_fast.py --model ./outputs/chess-sft-final
-    python evaluate_fast.py --model ./outputs/chess-sft-final --batch_size 32
-    python evaluate_fast.py --model ./outputs/chess-sft-final --stockfish /usr/bin/stockfish --workers 8
+    python eval/evaluate_fast.py --model ./outputs/chess-sft-final
+    python eval/evaluate_fast.py --model ./outputs/chess-sft-final --batch_size 32
+    python eval/evaluate_fast.py --model ./outputs/chess-sft-final --stockfish /usr/bin/stockfish --workers 8
 """
 
 import argparse
 import json
 import os
+import sys
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -28,20 +29,25 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 import time
 
+# Ensure repo root is on sys.path when running from subfolders
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import chess
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.chess_utils import (
+from src.utils.chess_utils import (
     render_board_utf, 
     get_legal_moves_uci, 
     get_first_legal_move,
     extract_uci_from_response,
     validate_uci_move
 )
-from src.formatting import DEFAULT_PROMPT_TEMPLATE
-from src.data_processing import stream_game_positions, stream_puzzle_positions
+from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
+from src.utils.data_processing import stream_game_positions, stream_puzzle_positions
 
 
 @dataclass

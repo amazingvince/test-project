@@ -8,8 +8,8 @@ This script:
 3. Saves the dataset with move evaluations for training
 
 Usage:
-    python preprocess_with_eval.py --output ./data/chess_with_eval --size 100000
-    python preprocess_with_eval.py --config configs/config_with_eval.yaml
+    python sft/preprocess.py --output ./data/chess_with_eval --size 100000
+    python sft/preprocess.py --config configs/sft/config_with_eval.yaml
 """
 
 import argparse
@@ -20,8 +20,8 @@ import sys
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from src.data_processing_with_eval import preprocess_and_save_with_eval
-from src.stockfish_eval import StockfishEvaluator
+from src.utils.data_processing_with_eval import preprocess_and_save_with_eval
+from src.utils.stockfish_eval import StockfishEvaluator
 
 
 def find_stockfish():
@@ -48,7 +48,7 @@ def main():
         description='Preprocess chess data with Stockfish evaluations'
     )
     parser.add_argument(
-        '--config', type=str, default='configs/config_with_eval.yaml',
+        '--config', type=str, default='configs/sft/config_with_eval.yaml',
         help='Path to configuration file'
     )
     parser.add_argument(

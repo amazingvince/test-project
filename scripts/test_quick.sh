@@ -27,9 +27,9 @@ echo ""
 echo "Testing imports..."
 python3 << 'EOF'
 print("Testing core imports...")
-from src.chess_utils import render_board_utf, get_legal_moves_uci, extract_uci_from_response
-from src.data_processing import create_streaming_dataset
-from src.formatting import position_to_messages
+from src.utils.chess_utils import render_board_utf, get_legal_moves_uci, extract_uci_from_response
+from src.utils.data_processing import create_streaming_dataset
+from src.utils.formatting import position_to_messages
 import chess
 
 # Test chess utils

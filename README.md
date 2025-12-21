@@ -74,7 +74,7 @@ brew install stockfish       # macOS
 
 ```bash
 # Inspect how <uci_move> and UCI moves are tokenized, plus stream a few samples
-python scripts/tokenizer_probe.py --config configs/config_distill.yaml --samples-per-source 2
+python scripts/tokenizer_probe.py --config configs/distill/config_distill.yaml --samples-per-source 2
 ```
 
 ### Optional: Openings + Tablebases
@@ -89,49 +89,66 @@ python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5 
 python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5
 ```
 
+### Optional: Distillation Gut-Check Report
+
+```bash
+# Samples random preprocessed positions and writes a Markdown report with:
+# - ASCII board
+# - input prompt
+# - reasoning trace
+#
+# Also checks for openings/tablebases and downloads them if missing.
+python scripts/gut_check_report.py \
+  --dataset ./data/chess_distill \
+  --num-samples 20 \
+  --output ./reports/gut_check_report.md
+```
+
+If `--dataset` does not exist, the script auto-runs `distill/preprocess.py` to create a small dataset for the report (override with `--preprocess-size` or disable with `--no-auto-preprocess`).
+
 ### 2. Stage 1: SFT Training
 
 ```bash
 # Train on human games (streaming from Lichess)
-python train_sft.py --config configs/config_sft.yaml --streaming
+python sft/train.py --config configs/sft/config_sft.yaml --streaming
 
 # Or with preprocessed data
-python train_sft.py --config configs/config_sft.yaml --preprocessed_path ./data/chess_sft
+python sft/train.py --config configs/sft/config_sft.yaml --preprocessed_path ./data/chess_sft
 ```
 
 ### 3. Stage 2: Policy Distillation
 
 ```bash
 # First, preprocess with Stockfish analysis
-python preprocess_distill.py \
+python distill/preprocess.py \
     --output ./data/chess_distill \
     --size 500000 \
     --depth 12 \
     --workers 8
 
 # Then train with distillation (on SFT checkpoint or base model)
-python train_distill.py \
-    --config configs/config_distill.yaml \
+python distill/train.py \
+    --config configs/distill/config_distill.yaml \
     --preprocessed_path ./data/chess_distill
 ```
 
 Hardware presets:
-- `configs/config_distill.yaml` is tuned for a single RTX 5090 + 32 CPU cores.
-- `configs/config_distill_h100.yaml` is tuned for a single H100 + 32 CPU cores.
+- `configs/distill/config_distill.yaml` is tuned for a single RTX 5090 + 32 CPU cores.
+- `configs/distill/config_distill_h100.yaml` is tuned for a single H100 + 32 CPU cores.
 
 ## Evaluation
 
 ```bash
 # Mixed games + puzzles (uses data settings from config)
-python evaluate_fast.py \
+python eval/evaluate_fast.py \
   --model ./outputs/chess-sft-final \
-  --config configs/config_sft.yaml \
+  --config configs/sft/config_sft.yaml \
   --source mixed \
   --num_positions 1000 \
   --max_new_tokens 128
 
 # Puzzles only
-python evaluate_fast.py \
+python eval/evaluate_fast.py \
   --model ./outputs/chess-sft-final \
   --source puzzles \
   --num_positions 500
@@ -139,7 +156,7 @@ python evaluate_fast.py \
 
 Shortcut:
 ```bash
-./scripts/evaluate.sh ./outputs/chess-sft-final --config configs/config_sft.yaml --source mixed
+./scripts/evaluate.sh ./outputs/chess-sft-final --config configs/sft/config_sft.yaml --source mixed
 ```
 
 Notes:
@@ -150,27 +167,28 @@ Notes:
 
 ```
 Training Scripts
-- train_sft.py             Stage 1: Supervised fine-tuning
-- train_distill.py         Stage 2: Policy distillation
+- sft/train.py             Stage 1: Supervised fine-tuning
+- distill/train.py         Stage 2: Policy distillation
 
 Configurations
-- configs/config_sft.yaml
-- configs/config_distill.yaml
+- configs/sft/config_sft.yaml
+- configs/distill/config_distill.yaml
 
 Core Modules
-- src/stockfish_teacher.py
-- src/formatting_distill.py
-- src/distillation_loss.py
-- src/collator_distill.py
+- src/distill/stockfish_teacher.py
+- src/distill/formatting_distill.py
+- src/distill/distillation_loss.py
+- src/distill/collator_distill.py
 
 Preprocessing
-- preprocess_distill.py
+- distill/preprocess.py
 
 Scripts
 - scripts/train_sft.sh
 - scripts/train_distill.sh
 - scripts/evaluate.sh
 - scripts/tokenizer_probe.py
+- scripts/gut_check_report.py
 ```
 
 ## Training Example Format
@@ -533,7 +551,7 @@ sudo apt install stockfish  # Ubuntu/Debian
 brew install stockfish       # macOS
 
 # Or specify path
-python preprocess_distill.py --stockfish-path /path/to/stockfish
+python distill/preprocess.py --stockfish-path /path/to/stockfish
 ```
 
 ### Slow preprocessing
@@ -550,18 +568,19 @@ python preprocess_distill.py --stockfish-path /path/to/stockfish
 
 | File | Purpose |
 |------|---------|
-| `train_sft.py` | Stage 1: Supervised fine-tuning |
-| `train_distill.py` | Stage 2: Policy distillation |
-| `configs/config_sft.yaml` | SFT configuration |
-| `configs/config_distill.yaml` | Distillation configuration |
-| `preprocess_distill.py` | Batch preprocessing with Stockfish |
-| `src/stockfish_teacher.py` | Parallel Stockfish analysis |
-| `src/formatting_distill.py` | Generate thinking with categories |
-| `src/distillation_loss.py` | Forward KL / JSD loss (Liger support) |
-| `src/collator_distill.py` | Data collation for training |
-| `evaluate_fast.py` | Fast batched evaluation with optional Stockfish |
+| `sft/train.py` | Stage 1: Supervised fine-tuning |
+| `distill/train.py` | Stage 2: Policy distillation |
+| `configs/sft/config_sft.yaml` | SFT configuration |
+| `configs/distill/config_distill.yaml` | Distillation configuration |
+| `distill/preprocess.py` | Batch preprocessing with Stockfish |
+| `src/distill/stockfish_teacher.py` | Parallel Stockfish analysis |
+| `src/distill/formatting_distill.py` | Generate thinking with categories |
+| `src/distill/distillation_loss.py` | Forward KL / JSD loss (Liger support) |
+| `src/distill/collator_distill.py` | Data collation for training |
+| `eval/evaluate_fast.py` | Fast batched evaluation with optional Stockfish |
 | `scripts/evaluate.sh` | CLI wrapper for evaluation |
 | `scripts/tokenizer_probe.py` | Tokenizer and data stream sanity check |
+| `scripts/gut_check_report.py` | Generate a Markdown gut-check report from preprocessed distill data |
 | `scripts/upload_to_hub.py` | Upload model to Hugging Face Hub |
 
 ## Uploading to Hugging Face

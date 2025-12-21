@@ -12,7 +12,7 @@ pip install -r requirements_optimized.txt
 pip install flash-attn --no-build-isolation
 
 # Run optimized training
-python train_optimized.py --config configs/config_5090.yaml --streaming
+python distill/train.py --config configs/distill/config_distill.yaml --streaming
 ```
 
 ## Optimization Summary

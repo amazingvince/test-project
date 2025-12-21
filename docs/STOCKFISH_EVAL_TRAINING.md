@@ -73,15 +73,15 @@ This means:
 
 ```
 src/
-├── stockfish_eval.py           # Stockfish evaluation utilities
+├── src/utils/stockfish_eval.py # Stockfish evaluation utilities
 ├── data_processing_with_eval.py # Data generation with evals
 ├── formatting_with_eval.py     # Format with evals in <think>
 └── ...
 
 configs/
-├── config_with_eval.yaml       # Configuration with eval settings
+├── configs/sft/config_with_eval.yaml       # Configuration with eval settings
 
-preprocess_with_eval.py         # Script to generate training data
+sft/preprocess.py               # Script to generate training data
 ```
 
 ## Quick Start
@@ -103,15 +103,15 @@ pip install chess python-chess datasets tqdm
 
 ```bash
 # Small test run (1000 positions)
-python preprocess_with_eval.py \
+python sft/preprocess.py \
     --output ./data/chess_eval_test \
     --size 1000 \
     --depth 10 \
     --workers 4
 
 # Full dataset (500K positions)
-python preprocess_with_eval.py \
-    --config configs/config_with_eval.yaml \
+python sft/preprocess.py \
+    --config configs/sft/config_with_eval.yaml \
     --size 500000
 ```
 
@@ -119,7 +119,7 @@ python preprocess_with_eval.py \
 
 ```bash
 python train.py \
-    --config configs/config_with_eval.yaml \
+    --config configs/sft/config_with_eval.yaml \
     --preprocessed_path ./data/chess_eval_test
 ```
 
@@ -240,7 +240,7 @@ Best continuation: Qxf7# (M1)
 
 ## Advanced: Custom Reward Functions
 
-You can define custom reward functions in `src/stockfish_eval.py`:
+You can define custom reward functions in `src/utils/stockfish_eval.py`:
 
 ```python
 def compute_move_reward(
@@ -274,7 +274,7 @@ which stockfish
 sudo apt install stockfish
 
 # Specify path manually
-python preprocess_with_eval.py --stockfish-path /path/to/stockfish
+python sft/preprocess.py --stockfish-path /path/to/stockfish
 ```
 
 ### Slow Processing

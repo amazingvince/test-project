@@ -26,7 +26,7 @@ from .formatting_distill import (
     DISTILLATION_RESPONSE_TEMPLATE,
 )
 from .reasoning_trace import ReasoningTraceGenerator
-from .chess_utils import render_board_utf, get_legal_moves_uci
+from ..utils.chess_utils import render_board_utf, get_legal_moves_uci
 
 
 @dataclass

@@ -14,7 +14,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.chess_utils import (
+from src.utils.chess_utils import (
     render_board_utf,
     parse_movetext,
     get_legal_moves_uci,
@@ -24,7 +24,7 @@ from src.chess_utils import (
     position_from_board,
 )
 
-from src.formatting import (
+from src.utils.formatting import (
     position_to_messages,
     DEFAULT_PROMPT_TEMPLATE,
     DEFAULT_RESPONSE_TEMPLATE,
@@ -187,7 +187,7 @@ class TestDataProcessing(unittest.TestCase):
     
     def test_elo_weighting(self):
         """Test ELO-based weighting."""
-        from src.data_processing import get_elo_weight
+        from src.utils.data_processing import get_elo_weight
         
         elo_weights = {
             1200: 0.05, 1400: 0.10, 1600: 0.15,
@@ -205,7 +205,7 @@ class TestDataProcessing(unittest.TestCase):
     
     def test_game_to_positions(self):
         """Test converting game to positions."""
-        from src.data_processing import game_to_positions
+        from src.utils.data_processing import game_to_positions
         
         # Simple game
         movetext = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7"
@@ -234,7 +234,7 @@ class TestLossWeighting(unittest.TestCase):
     
     def test_loss_weight_linear(self):
         """Test linear loss weighting."""
-        from src.data_processing import compute_loss_weight_linear
+        from src.utils.data_processing import compute_loss_weight_linear
         
         # Min ELO should give min weight
         w_min = compute_loss_weight_linear(1200, elo_min=1200, elo_max=2400)
@@ -250,7 +250,7 @@ class TestLossWeighting(unittest.TestCase):
     
     def test_loss_weight_gaussian(self):
         """Test Gaussian loss weighting."""
-        from src.data_processing import compute_loss_weight_gaussian
+        from src.utils.data_processing import compute_loss_weight_gaussian
         
         # Target ELO should give max weight
         w_target = compute_loss_weight_gaussian(1900, target_elo=1900)
@@ -267,7 +267,7 @@ class TestLossWeighting(unittest.TestCase):
     
     def test_loss_weight_bounds(self):
         """Test that loss weights stay within bounds."""
-        from src.data_processing import compute_loss_weight_linear, compute_loss_weight_gaussian
+        from src.utils.data_processing import compute_loss_weight_linear, compute_loss_weight_gaussian
         
         # Test extreme values
         for elo in [0, 500, 1000, 1500, 2000, 2500, 3000, 4000]:
@@ -281,7 +281,7 @@ class TestLossWeighting(unittest.TestCase):
     
     def test_compute_loss_weight_with_config(self):
         """Test full compute_loss_weight with config."""
-        from src.data_processing import compute_loss_weight
+        from src.utils.data_processing import compute_loss_weight
         
         config = {
             'loss_weighting': {
@@ -305,7 +305,7 @@ class TestLossWeighting(unittest.TestCase):
     
     def test_positions_have_loss_weight(self):
         """Test that generated positions include loss_weight."""
-        from src.data_processing import game_to_positions
+        from src.utils.data_processing import game_to_positions
         
         movetext = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7"
         

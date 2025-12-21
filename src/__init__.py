@@ -2,15 +2,15 @@
 Chess LLM SFT Training - Source Module
 
 Components:
-- chess_utils: Board rendering, move parsing, position utilities
-- data_processing: Game and puzzle data loading, preprocessing, loss weighting
-- formatting: Chat format conversion for SFT training
-- stockfish_eval: Stockfish evaluation for all moves (NEW)
-- data_processing_with_eval: Data processing with Stockfish analysis (NEW)
-- formatting_with_eval: Formatting with move evaluations in thinking (NEW)
+- utils.chess_utils: Board rendering, move parsing, position utilities
+- utils.data_processing: Game and puzzle data loading, preprocessing, loss weighting
+- utils.formatting: Chat format conversion for SFT training
+- utils.stockfish_eval: Stockfish evaluation for all moves (NEW)
+- utils.data_processing_with_eval: Data processing with Stockfish analysis (NEW)
+- utils.formatting_with_eval: Formatting with move evaluations in thinking (NEW)
 """
 
-from .chess_utils import (
+from .utils.chess_utils import (
     ChessPosition,
     render_board_utf,
     parse_movetext,
@@ -22,7 +22,7 @@ from .chess_utils import (
     setup_position_from_fen,
 )
 
-from .data_processing import (
+from .utils.data_processing import (
     # Position extraction
     game_to_positions,
     puzzle_to_position,
@@ -43,7 +43,7 @@ from .data_processing import (
     compute_loss_weight_step,
 )
 
-from .formatting import (
+from .utils.formatting import (
     position_to_messages,
     position_to_text,
     create_formatting_func,
@@ -56,7 +56,7 @@ from .formatting import (
 # Stockfish evaluation modules
 STOCKFISH_EVAL_AVAILABLE = False
 try:
-    from .stockfish_eval import (
+    from .utils.stockfish_eval import (
         MoveEvaluation,
         PositionAnalysis,
         StockfishEvaluator,
@@ -65,7 +65,7 @@ try:
         compute_loss_weight_from_cp,
     )
     
-    from .data_processing_with_eval import (
+    from .utils.data_processing_with_eval import (
         ChessPositionWithEval,
         compute_loss_weight_from_quality,
         position_from_board_with_eval,
@@ -76,7 +76,7 @@ try:
         preprocess_and_save_with_eval,
     )
     
-    from .formatting_with_eval import (
+    from .utils.formatting_with_eval import (
         format_move_analysis,
         DEFAULT_RESPONSE_TEMPLATE_WITH_EVAL,
         COMPACT_RESPONSE_TEMPLATE_WITH_EVAL,
@@ -90,7 +90,7 @@ except ImportError as e:
 # Policy Distillation modules (new)
 DISTILLATION_AVAILABLE = False
 try:
-    from .stockfish_teacher import (
+    from .distill.stockfish_teacher import (
         StockfishTeacher,
         MoveAnalysis,
         PositionAnalysis as TeacherPositionAnalysis,
@@ -98,7 +98,7 @@ try:
         cp_to_probability_distribution,
     )
     
-    from .formatting_distill import (
+    from .distill.formatting_distill import (
         position_to_messages_distill,
         create_distillation_example,
         generate_thinking_text,
@@ -106,9 +106,9 @@ try:
         DISTILLATION_RESPONSE_TEMPLATE,
     )
 
-    from .reasoning_trace import ReasoningTraceGenerator
+    from .distill.reasoning_trace import ReasoningTraceGenerator
     
-    from .distillation_loss import (
+    from .distill.distillation_loss import (
         ChessDistillationLoss,
         SequenceDistillationLoss,
         AdaptiveDistillationLoss,
@@ -116,7 +116,7 @@ try:
         create_soft_target_tensor,
     )
     
-    from .collator_distill import (
+    from .distill.collator_distill import (
         DistillationCollator,
         PrecomputedDistillationCollator,
     )

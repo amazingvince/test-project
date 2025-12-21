@@ -109,7 +109,7 @@ else
 
     if [ ! -d "$DATA_PATH" ]; then
         echo "ERROR: Data not found at $DATA_PATH"
-        echo "  Option 1: python preprocess_distill.py --output $DATA_PATH --size 100000"
+        echo "  Option 1: python distill/preprocess.py --output $DATA_PATH --size 100000"
         echo "  Option 2: ./scripts/train_distill.sh --streaming --max-steps 50000"
         exit 1
     fi
@@ -123,9 +123,9 @@ echo ""
 
 # Build and run command
 if [ -n "$STREAMING" ]; then
-    CMD="python train_distill.py --config configs/config_distill.yaml --streaming $MAX_STEPS $DEBUG $RESUME $NO_LIGER $NO_CCE $EXTRA_ARGS"
+    CMD="python distill/train.py --config configs/distill/config_distill.yaml --streaming $MAX_STEPS $DEBUG $RESUME $NO_LIGER $NO_CCE $EXTRA_ARGS"
 else
-    CMD="python train_distill.py --config configs/config_distill.yaml --preprocessed_path $DATA_PATH $MAX_STEPS $DEBUG $RESUME $NO_LIGER $NO_CCE $EXTRA_ARGS"
+    CMD="python distill/train.py --config configs/distill/config_distill.yaml --preprocessed_path $DATA_PATH $MAX_STEPS $DEBUG $RESUME $NO_LIGER $NO_CCE $EXTRA_ARGS"
 fi
 
 echo "Command: $CMD"

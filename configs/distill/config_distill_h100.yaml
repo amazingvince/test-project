@@ -246,6 +246,19 @@ reasoning_trace:
   include_quiet_move_motif: true
   perpetual_max_plies: 6
   max_motifs_per_candidate: 1
+  include_candidate_pv: true
+  candidate_pv_prob: 0.4
+  candidate_pv_max_len: 4
+  candidate_question_prob: 0.35
+  include_static_eval_notes: true
+  static_eval_prob: 0.25
+  max_static_eval_notes: 2
+  static_eval_include_material: true
+  static_eval_include_pawn_structure: true
+  static_eval_include_king_safety: true
+  static_eval_include_development: true
+  static_eval_include_mobility: true
+  mobility_note_threshold: 8
   include_positional_cues: true
   max_positional_cues: 4
   pv_prune_quiet: true
@@ -272,6 +285,7 @@ reasoning_trace:
   #   - "./data/syzygy"
 
   # Variety controls
+  orientation_starter_prob: 0.25
   reconsideration_prob: 0.4
   dead_end_prob: 0.4
   comparison_prob: 0.5

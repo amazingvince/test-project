@@ -10,8 +10,8 @@ Key features:
 - Correct gradient accumulation handling
 
 Usage:
-    python train.py --config configs/config.yaml
-    python train.py --config configs/config.yaml --debug
+    python sft/train.py --config configs/sft/config_sft.yaml
+    python sft/train.py --config configs/sft/config_sft.yaml --debug
 """
 
 import os
@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import warnings
+
+# Ensure repo root is on sys.path when running from subfolders
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import torch
 import torch.nn.functional as F
@@ -167,7 +172,7 @@ class SFTDataCollatorWithPromptMasking:
             if 'messages' in example:
                 messages = example['messages']
             else:
-                from src.formatting import position_to_messages
+                from src.utils.formatting import position_to_messages
                 messages = position_to_messages(example)['messages']
             
             # Tokenize the full conversation
@@ -509,14 +514,14 @@ class FastChessEvalCallback(TrainerCallback):
     @torch.inference_mode()
     def _run_chess_eval(self, model, global_step: int, final: bool = False):
         """Run batched chess evaluation with ACPL."""
-        from src.chess_utils import (
+        from src.utils.chess_utils import (
             render_board_utf,
             get_legal_moves_uci,
             get_first_legal_move,
             extract_uci_from_response,
             validate_uci_move
         )
-        from src.formatting import DEFAULT_PROMPT_TEMPLATE
+        from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
         from concurrent.futures import ProcessPoolExecutor, as_completed
         
         model.eval()
@@ -775,8 +780,8 @@ def load_or_create_dataset(
     preprocessed_path: Optional[str] = None
 ):
     """Load existing dataset or create from scratch."""
-    from src.data_processing import create_streaming_dataset, preprocess_and_save
-    from src.formatting import add_messages_column
+    from src.utils.data_processing import create_streaming_dataset, preprocess_and_save
+    from src.utils.formatting import add_messages_column
     
     data_config = config.get('data', {})
     training_config = config.get('training', {})
@@ -824,7 +829,7 @@ def load_or_create_dataset(
         
         if eval_size > 0:
             print(f"Creating eval dataset ({eval_size} examples)...")
-            from src.data_processing import stream_game_positions, stream_puzzle_positions
+            from src.utils.data_processing import stream_game_positions, stream_puzzle_positions
             eval_examples = []
             eval_games_examples = []
             eval_puzzles_examples = []
@@ -1084,7 +1089,7 @@ def print_gpu_memory():
 
 def main():
     parser = argparse.ArgumentParser(description='Chess LLM SFT with CCE + Liger')
-    parser.add_argument('--config', type=str, default='configs/config.yaml')
+    parser.add_argument('--config', type=str, default='configs/sft/config_sft.yaml')
     parser.add_argument('--streaming', action='store_true')
     parser.add_argument('--preprocessed_path', type=str, default=None)
     parser.add_argument('--resume', type=str, default=None)

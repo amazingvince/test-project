@@ -374,9 +374,9 @@ def create_distillation_example(
     # Generate board UTF if not provided
     if board_utf is None:
         try:
-            from .chess_utils import render_board_utf
+            from ..utils.chess_utils import render_board_utf
         except ImportError:
-            from chess_utils import render_board_utf
+            from src.utils.chess_utils import render_board_utf
         board_utf = render_board_utf(board)
 
     # Get legal moves
@@ -513,10 +513,10 @@ if __name__ == "__main__":
     
     try:
         from .stockfish_teacher import StockfishTeacher
-        from .chess_utils import render_board_utf
+        from ..utils.chess_utils import render_board_utf
     except ImportError:
         from stockfish_teacher import StockfishTeacher
-        from chess_utils import render_board_utf
+        from src.utils.chess_utils import render_board_utf
     import chess
     
     try:

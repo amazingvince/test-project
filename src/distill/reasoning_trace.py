@@ -17,9 +17,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import chess
 
 try:
-    from .chess_utils import parse_movetext
+    from ..utils.chess_utils import parse_movetext
 except ImportError:
-    from chess_utils import parse_movetext
+    from src.utils.chess_utils import parse_movetext
 
 
 PIECE_NAMES = {
@@ -240,9 +240,11 @@ class ReasoningTraceGenerator:
             opening_paths = self._default_opening_paths()
         self._opening = OpeningBook(opening_paths)
 
-        tablebase_paths = self.config.get("tablebase_paths") or []
+        tablebase_paths = self.config.get("tablebase_paths")
         if isinstance(tablebase_paths, (str, Path)):
             tablebase_paths = [tablebase_paths]
+        if not tablebase_paths:
+            tablebase_paths = self._default_tablebase_paths()
         self._tablebase = TablebaseProbe(tablebase_paths)
 
     def status(self) -> Dict[str, Any]:
@@ -294,6 +296,7 @@ class ReasoningTraceGenerator:
             source,
             style,
             rng,
+            cfg,
         ) if cfg.get("include_orientation", True) else ""
 
         assessment = self._assessment_line(
@@ -304,6 +307,12 @@ class ReasoningTraceGenerator:
             rng,
             cfg,
         ) if cfg.get("include_assessment", True) else ""
+
+        static_eval = ""
+        if cfg.get("include_static_eval_notes", False):
+            prob = float(cfg.get("static_eval_prob", 0.25))
+            if rng.random() < min(max(prob, 0.0), 1.0):
+                static_eval = self._static_eval_line(board, style, rng, cfg)
 
         threat_scan = self._threat_scan_line(
             board,
@@ -376,6 +385,7 @@ class ReasoningTraceGenerator:
         sections = [
             ("orientation", orientation),
             ("assessment", assessment),
+            ("static_eval", static_eval),
             ("threat_scan", threat_scan),
             ("plan", plan_line),
             ("opponent", opponent_line),
@@ -389,6 +399,218 @@ class ReasoningTraceGenerator:
 
         text = self._apply_budget(sections, exploration_paragraphs, cfg)
         return self._apply_guardrails(text, tablebase_info, cfg)
+
+    def _static_eval_line(
+        self,
+        board: chess.Board,
+        style: str,
+        rng: random.Random,
+        cfg: Dict[str, Any],
+    ) -> str:
+        max_items = int(cfg.get("max_static_eval_notes", 2))
+        if max_items <= 0:
+            return ""
+
+        notes: List[str] = []
+        if cfg.get("static_eval_include_material", True):
+            note = self._material_note(board, rng)
+            if note:
+                notes.append(note)
+        if cfg.get("static_eval_include_pawn_structure", True):
+            note = self._pawn_structure_note(board, rng)
+            if note:
+                notes.append(note)
+        if cfg.get("static_eval_include_king_safety", True):
+            note = self._king_safety_note(board, rng)
+            if note:
+                notes.append(note)
+        if cfg.get("static_eval_include_development", True):
+            note = self._development_note(board, rng)
+            if note:
+                notes.append(note)
+        if cfg.get("static_eval_include_mobility", True):
+            note = self._mobility_note(board, rng, cfg)
+            if note:
+                notes.append(note)
+
+        if not notes:
+            return ""
+
+        rng.shuffle(notes)
+        chosen = notes[:max_items]
+        prefix = rng.choice([
+            "Position snapshot:",
+            "Quick positional picture:",
+            "A few static notes:",
+        ])
+        if style == "concise":
+            prefix = rng.choice([
+                "Quick note:",
+                "Snapshot:",
+            ])
+        return f"{prefix} " + " ".join(chosen)
+
+    def _material_note(self, board: chess.Board, rng: random.Random) -> str:
+        values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 3,
+            chess.BISHOP: 3,
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+        }
+        white = 0
+        black = 0
+        for piece_type, value in values.items():
+            white += len(board.pieces(piece_type, chess.WHITE)) * value
+            black += len(board.pieces(piece_type, chess.BLACK)) * value
+        diff = white - black
+        if diff == 0:
+            return rng.choice([
+                "Material looks even.",
+                "Material is roughly equal.",
+            ])
+        leader = "White" if diff > 0 else "Black"
+        points = abs(diff)
+        if points == 1:
+            return f"{leader} is up a pawn."
+        if points == 2:
+            return f"{leader} has a small material edge."
+        return f"{leader} is up material."
+
+    def _pawn_structure_note(self, board: chess.Board, rng: random.Random) -> str:
+        color = board.turn
+        opp = not color
+        weak = self._pawn_weakness_summary(board, color)
+        opp_weak = self._pawn_weakness_summary(board, opp)
+        islands = self._pawn_islands(board, color)
+        opp_islands = self._pawn_islands(board, opp)
+
+        if weak:
+            return weak
+        if islands > opp_islands:
+            return rng.choice([
+                "Pawn structure is a bit fragmented.",
+                "The pawn structure looks slightly split into islands.",
+            ])
+        if islands < opp_islands:
+            return rng.choice([
+                "Pawn structure looks cohesive.",
+                "The pawn structure feels well-connected.",
+            ])
+        if opp_weak:
+            return rng.choice([
+                "The opponent's pawn structure has some targets.",
+                "There may be pawn weaknesses to play against.",
+            ])
+        return rng.choice([
+            "No obvious pawn weaknesses jump out.",
+            "Pawn structure looks fairly healthy.",
+        ])
+
+    def _pawn_weakness_summary(self, board: chess.Board, color: bool) -> str:
+        isolated = self._find_isolated_pawn(board, color)
+        if isolated is not None:
+            square = chess.square_name(isolated)
+            return f"An isolated pawn on {square} could be a long-term weakness."
+        doubled = self._find_doubled_pawn_file(board, color)
+        if doubled is not None:
+            file_letter = "abcdefgh"[doubled]
+            return f"Doubled pawns on the {file_letter}-file may become targets."
+        backward = self._find_backward_pawn(board, color)
+        if backward is not None:
+            square = chess.square_name(backward)
+            return f"A backward pawn on {square} can be hard to defend."
+        return ""
+
+    def _pawn_islands(self, board: chess.Board, color: bool) -> int:
+        pawn_files = [False] * 8
+        for sq in board.pieces(chess.PAWN, color):
+            pawn_files[chess.square_file(sq)] = True
+        islands = 0
+        in_island = False
+        for present in pawn_files:
+            if present and not in_island:
+                islands += 1
+                in_island = True
+            elif not present:
+                in_island = False
+        return islands
+
+    def _king_safety_note(self, board: chess.Board, rng: random.Random) -> str:
+        side = "White" if board.turn == chess.WHITE else "Black"
+        opp_side = "Black" if board.turn == chess.WHITE else "White"
+        if self._is_exposed_king(board, board.turn):
+            return rng.choice([
+                f"{side}'s king safety looks a bit loose.",
+                f"{side}'s king is somewhat exposed.",
+            ])
+        if self._is_exposed_king(board, not board.turn):
+            return rng.choice([
+                f"{opp_side}'s king safety may be a concern.",
+                f"{opp_side}'s king looks a bit drafty.",
+            ])
+        return rng.choice([
+            "Both kings look reasonably safe for now.",
+            "King safety looks stable on both sides.",
+        ])
+
+    def _development_note(self, board: chess.Board, rng: random.Random) -> str:
+        if self._position_phase(board) != "opening":
+            return ""
+        color = board.turn
+        undeveloped = self._count_undeveloped_minors(board, color)
+        if undeveloped >= 3:
+            return rng.choice([
+                "Several minor pieces still need development.",
+                "Development is still getting started; pieces need to come out.",
+            ])
+        if undeveloped <= 1:
+            return rng.choice([
+                "Development is largely complete.",
+                "Most pieces are developed already.",
+            ])
+        return rng.choice([
+            "There is still some development to finish.",
+            "A couple of pieces could still improve.",
+        ])
+
+    def _count_undeveloped_minors(self, board: chess.Board, color: bool) -> int:
+        if color == chess.WHITE:
+            start_squares = [chess.B1, chess.G1, chess.C1, chess.F1]
+        else:
+            start_squares = [chess.B8, chess.G8, chess.C8, chess.F8]
+        count = 0
+        for sq in start_squares:
+            piece = board.piece_at(sq)
+            if not piece or piece.color != color:
+                continue
+            if piece.piece_type in (chess.KNIGHT, chess.BISHOP):
+                count += 1
+        return count
+
+    def _mobility_note(self, board: chess.Board, rng: random.Random, cfg: Dict[str, Any]) -> str:
+        if board.is_check():
+            return ""
+        mobility_threshold = int(cfg.get("mobility_note_threshold", 8))
+        my_moves = sum(1 for _ in board.legal_moves)
+        opp_board = board.copy()
+        opp_board.turn = not board.turn
+        opp_moves = sum(1 for _ in opp_board.legal_moves)
+        delta = my_moves - opp_moves
+        if delta >= mobility_threshold:
+            return rng.choice([
+                "Side to move has more options and activity.",
+                "There is a bit more space to maneuver here.",
+            ])
+        if delta <= -mobility_threshold:
+            return rng.choice([
+                "Side to move looks a bit cramped with fewer options.",
+                "Options are limited, so precision matters.",
+            ])
+        return rng.choice([
+            "Mobility looks fairly balanced.",
+            "Both sides have a similar number of options.",
+        ])
 
     def _resolve_config(self, source: Optional[str]) -> Dict[str, Any]:
         cfg = dict(self.config)
@@ -419,6 +641,7 @@ class ReasoningTraceGenerator:
         source: Optional[str],
         style: str,
         rng: random.Random,
+        cfg: Dict[str, Any],
     ) -> str:
         side = "White" if board.turn == chess.WHITE else "Black"
         phase = self._position_phase(board)
@@ -445,6 +668,14 @@ class ReasoningTraceGenerator:
             ])
 
         lines = []
+        starter_prob = float(cfg.get("orientation_starter_prob", 0.25))
+        if rng.random() < min(max(starter_prob, 0.0), 1.0):
+            lines.append(rng.choice([
+                "Let me look at this position.",
+                "First impression:",
+                "At a glance:",
+                "What's going on here?",
+            ]))
         if opener:
             lines.append(opener)
         if source_hint:
@@ -522,6 +753,8 @@ class ReasoningTraceGenerator:
             "Moves to consider:",
             "Candidates:",
             "The main candidates are:",
+            "A few moves catch my eye:",
+            "The candidates that stand out are:",
         ])
         return f"{prefix} {', '.join(moves)}."
 
@@ -579,15 +812,60 @@ class ReasoningTraceGenerator:
         if cfg.get("include_trap_detection", False):
             trap = self._detect_trap_for_candidate(cand, analysis, cfg)
             trap_line = self._trap_phrase(trap, rng, board, cand, notation, cfg)
-        intro = rng.choice([
-            f"Looking at {move_label},",
-            f"For {move_label},",
-            f"Considering {move_label},",
+
+        pv_line = ""
+        if cfg.get("include_candidate_pv", True) and move is not None:
+            base_prob = float(cfg.get("candidate_pv_prob", 0.40))
+            if style == "concise":
+                base_prob *= 0.4
+            elif style == "tactical":
+                base_prob *= 1.2
+            if rng.random() < min(max(base_prob, 0.0), 1.0):
+                pv_line = self._candidate_pv_snippet(board, cand, notation, cfg, rng)
+
+        question_prob = float(cfg.get("candidate_question_prob", 0.35))
+        if rng.random() < min(max(question_prob, 0.0), 1.0):
+            intro = rng.choice([
+                f"What about {move_label}?",
+                f"Does {move_label} work here?",
+                f"How about {move_label}?",
+            ])
+            if idea:
+                idea = idea[:1].upper() + idea[1:]
+        else:
+            intro = rng.choice([
+                f"Looking at {move_label},",
+                f"For {move_label},",
+                f"Considering {move_label},",
+            ])
+
+        parts = [intro, idea, pv_line, quality, motif_line, trap_line]
+        return " ".join(part for part in parts if part)
+
+    def _candidate_pv_snippet(
+        self,
+        board: chess.Board,
+        cand: Any,
+        notation: str,
+        cfg: Dict[str, Any],
+        rng: random.Random,
+    ) -> str:
+        max_len = int(cfg.get("candidate_pv_max_len", 4))
+        if max_len <= 0:
+            return ""
+        pv_uci = list(getattr(cand, "pv_uci", None) or [])
+        if not pv_uci:
+            return ""
+        pruned_moves, _ = self._prune_pv_moves(board, pv_uci[:max_len], cfg)
+        line = self._format_pv_line(board, pruned_moves, notation)
+        if not line:
+            return ""
+        prefix = rng.choice([
+            "One concrete line is:",
+            "A sample line is:",
+            "For example:",
         ])
-        details = " ".join(part for part in [motif_line, trap_line] if part)
-        if details:
-            return f"{intro} {idea} {quality} {details}"
-        return f"{intro} {idea} {quality}"
+        return f"{prefix} {line}."
 
     def _reconsideration_line(self, rng: random.Random) -> str:
         return rng.choice([
@@ -798,12 +1076,12 @@ class ReasoningTraceGenerator:
             if style == "tactical":
                 return rng.choice([
                     "This looks most forcing.",
-                    "This keeps the initiative best.",
+                    "This keeps the initiative most cleanly.",
                     "This feels like the sharpest line.",
                 ])
             return rng.choice([
                 "It looks strongest.",
-                "This seems best.",
+                "This seems like the front-runner.",
                 "It feels like the top choice.",
             ])
         if delta <= 0.06:
@@ -832,7 +1110,7 @@ class ReasoningTraceGenerator:
             ])
         return rng.choice([
             "It looks risky in comparison.",
-            "It seems inferior to the best move.",
+            "It seems inferior to the leading option.",
             "It is probably not the most accurate.",
         ])
 
@@ -2147,7 +2425,7 @@ class ReasoningTraceGenerator:
             lead = rng.choice([
                 "Possible trap:",
                 "Likely trap:",
-                "Looks tricky:",
+                "Tricky trap:",
             ]) if kind == "trap" else rng.choice([
                 "Possible resource:",
                 "Hidden resource:",
@@ -2162,8 +2440,8 @@ class ReasoningTraceGenerator:
             lead = rng.choice([
                 "Confirmed trap:",
                 "Trap alert:",
-                "Warning:",
-                "Caution:",
+                "Trap warning:",
+                "Trap caution:",
             ])
         else:
             lead = rng.choice([
@@ -2331,6 +2609,7 @@ class ReasoningTraceGenerator:
             "comparison",
             "dead_end",
             "reconsideration",
+            "static_eval",
             "exploration",
             "candidates",
             "threat_scan",
@@ -2371,8 +2650,16 @@ class ReasoningTraceGenerator:
         return max(1, max(len(text.split()), len(text) // 4))
 
     @staticmethod
-    def _default_opening_paths() -> List[Path]:
-        root = Path(__file__).resolve().parent.parent
+    def _repo_root() -> Path:
+        cursor = Path(__file__).resolve()
+        for parent in [cursor.parent, *cursor.parents]:
+            if (parent / ".git").exists() or (parent / "README.md").exists():
+                return parent
+        return cursor.parent.parent
+
+    @classmethod
+    def _default_opening_paths(cls) -> List[Path]:
+        root = cls._repo_root()
         candidates = [
             root / "data" / "openings",
             root / "data" / "chess-openings",
@@ -2383,3 +2670,13 @@ class ReasoningTraceGenerator:
             if folder.exists():
                 paths.extend(sorted(folder.glob("*.tsv")))
         return paths
+
+    @classmethod
+    def _default_tablebase_paths(cls) -> List[Path]:
+        root = cls._repo_root()
+        candidates = [
+            root / "data" / "syzygy",
+            root / "data" / "tablebases",
+            root / "data" / "tablebase",
+        ]
+        return [folder for folder in candidates if folder.exists()]

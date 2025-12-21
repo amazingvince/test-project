@@ -67,7 +67,7 @@ echo ""
 
 # Show configuration
 echo "Configuration:"
-echo "  Config: configs/config_sft.yaml"
+echo "  Config: configs/sft/config_sft.yaml"
 echo "  Debug: ${DEBUG:-disabled}"
 echo "  Resume: ${RESUME:-none}"
 echo "  Post-training eval: ${SKIP_EVAL:-enabled}"
@@ -97,9 +97,9 @@ echo "Starting training..."
 echo ""
 
 accelerate launch \
-    --config_file configs/accelerate.yaml \
-    train_sft.py \
-    --config configs/config_sft.yaml \
+    --config_file configs/shared/accelerate.yaml \
+    sft/train.py \
+    --config configs/sft/config_sft.yaml \
     --streaming \
     $DEBUG \
     $RESUME \
@@ -121,7 +121,7 @@ if [ -z "$SKIP_EVAL" ] && [ -z "$DEBUG" ]; then
 
     if [ -d "$MODEL_PATH" ]; then
         # Build evaluation command
-        EVAL_CMD="python evaluate_fast.py --model $MODEL_PATH --num_positions 1000 --batch_size 32 --config configs/config_sft.yaml --source mixed --max_new_tokens 128"
+        EVAL_CMD="python eval/evaluate_fast.py --model $MODEL_PATH --num_positions 1000 --batch_size 32 --config configs/sft/config_sft.yaml --source mixed --max_new_tokens 128"
 
         if [ -n "$STOCKFISH_PATH" ]; then
             EVAL_CMD="$EVAL_CMD --stockfish $STOCKFISH_PATH --workers 8 --stockfish_depth 12"

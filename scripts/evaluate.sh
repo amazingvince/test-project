@@ -7,7 +7,7 @@
 #   ./scripts/evaluate.sh MODEL_PATH --num 500          # Custom number of positions
 #   ./scripts/evaluate.sh MODEL_PATH --no-stockfish     # Skip ACPL (faster)
 #   ./scripts/evaluate.sh MODEL_PATH --source puzzles   # Evaluate only puzzles
-#   ./scripts/evaluate.sh MODEL_PATH --config configs/config_sft.yaml
+#   ./scripts/evaluate.sh MODEL_PATH --config configs/sft/config_sft.yaml
 
 set -e
 
@@ -181,7 +181,7 @@ if [ -n "$GAMES_RATIO" ]; then
     GAMES_RATIO_ARGS="--games_ratio $GAMES_RATIO"
 fi
 
-python evaluate_fast.py \
+python eval/evaluate_fast.py \
     --model "$MODEL_PATH" \
     --num_positions $NUM_POSITIONS \
     --batch_size $BATCH_SIZE \

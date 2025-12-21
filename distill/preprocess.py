@@ -9,8 +9,8 @@ This script:
 4. Saves the dataset ready for distillation training
 
 Usage:
-    python preprocess_distill.py --output ./data/chess_distill --size 100000
-    python preprocess_distill.py --config configs/config_distill.yaml
+    python distill/preprocess.py --output ./data/chess_distill --size 100000
+    python distill/preprocess.py --config configs/distill/config_distill.yaml
 """
 
 import argparse
@@ -22,22 +22,24 @@ import time
 from typing import Dict, Any, Optional, Iterator
 from dataclasses import asdict
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Ensure repo root is on sys.path when running from subfolders
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import chess
 from datasets import load_dataset, Dataset
 from tqdm import tqdm
 
-from src.stockfish_teacher import StockfishTeacher, PositionAnalysis
-from src.chess_utils import (
+from src.distill.stockfish_teacher import StockfishTeacher, PositionAnalysis
+from src.utils.chess_utils import (
     parse_movetext,
     render_board_utf,
     get_legal_moves_uci,
     get_first_legal_move,
 )
-from src.formatting_distill import create_distillation_example
-from src.reasoning_trace import ReasoningTraceGenerator
+from src.distill.formatting_distill import create_distillation_example
+from src.distill.reasoning_trace import ReasoningTraceGenerator
 
 
 def find_stockfish() -> Optional[str]:
@@ -360,7 +362,7 @@ def main():
         description='Preprocess chess data for policy distillation'
     )
     parser.add_argument(
-        '--config', type=str, default='configs/config_distill.yaml',
+        '--config', type=str, default='configs/distill/config_distill.yaml',
         help='Path to configuration file'
     )
     parser.add_argument(

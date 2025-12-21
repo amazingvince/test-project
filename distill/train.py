@@ -13,13 +13,13 @@ Key features:
 
 Usage:
     # With preprocessed data (recommended)
-    python train_distill.py --config configs/config_distill.yaml --preprocessed_path ./data/chess_distill
+    python distill/train.py --config configs/distill/config_distill.yaml --preprocessed_path ./data/chess_distill
 
     # With streaming (on-the-fly Stockfish analysis)
-    python train_distill.py --config configs/config_distill.yaml --streaming
+    python distill/train.py --config configs/distill/config_distill.yaml --streaming
 
     # Debug mode
-    python train_distill.py --config configs/config_distill.yaml --preprocessed_path ./data/chess_distill --debug
+    python distill/train.py --config configs/distill/config_distill.yaml --preprocessed_path ./data/chess_distill --debug
 """
 
 import os
@@ -32,6 +32,11 @@ from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import warnings
 import shutil
+
+# Ensure repo root is on sys.path when running from subfolders
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import torch
 import torch.nn.functional as F
@@ -147,18 +152,18 @@ except ImportError:
 # Imports from local modules
 # ============================================================================
 
-from src.distillation_loss import (
+from src.distill.distillation_loss import (
     ChessDistillationLoss,
     compute_distillation_metrics,
     create_soft_target_tensor,
     LIGER_AVAILABLE as LIGER_LOSS_AVAILABLE,
 )
-from src.collator_distill import (
+from src.distill.collator_distill import (
     DistillationCollator,
     PrecomputedDistillationCollator,
 )
-from src.stockfish_teacher import StockfishTeacher
-from src.reasoning_trace import ReasoningTraceGenerator
+from src.distill.stockfish_teacher import StockfishTeacher
+from src.distill.reasoning_trace import ReasoningTraceGenerator
 
 
 # ============================================================================
@@ -725,7 +730,7 @@ def load_distillation_dataset(
 
     raise ValueError(
         f"No dataset found at {preprocessed_path}. "
-        "Run preprocessing first: python preprocess_distill.py"
+            "Run preprocessing first: python distill/preprocess.py"
     )
 
 
@@ -733,14 +738,14 @@ def load_streaming_dataset(config: Dict[str, Any]):
     """
     Load TRUE streaming dataset using IterableDataset.
 
-    Pattern from train_sft.py:
+    Pattern from sft/train.py:
     - Training: IterableDataset (true streaming, infinite data)
     - Eval: Small fixed Dataset (consistent evaluation)
 
     Data is generated on-the-fly - never materializes in memory.
     Stockfish analysis happens per-batch in the collator.
     """
-    from src.data_processing import (
+    from src.utils.data_processing import (
         create_streaming_dataset,
         stream_game_positions,
         stream_puzzle_positions,
@@ -1020,7 +1025,7 @@ def print_gpu_memory():
 
 def main():
     parser = argparse.ArgumentParser(description='Chess LLM Policy Distillation Training')
-    parser.add_argument('--config', type=str, default='configs/config_distill.yaml',
+    parser.add_argument('--config', type=str, default='configs/distill/config_distill.yaml',
                         help='Path to configuration file')
     parser.add_argument('--preprocessed_path', type=str, default=None,
                         help='Path to preprocessed distillation dataset')
@@ -1152,7 +1157,7 @@ def main():
 
     # Setup chess evaluation callback (optional)
     chess_eval_callback = None
-    # Import from train_sft.py if needed
+    # Import from sft/train.py if needed
     try:
         from train_sft import FastChessEvalCallback, prepare_eval_positions_for_callback
 

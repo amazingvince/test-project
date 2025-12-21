@@ -9,8 +9,8 @@ from typing import List, Tuple
 
 import chess
 
-from src.reasoning_trace import ReasoningTraceGenerator, TablebaseInfo
-from src.stockfish_teacher import MoveAnalysis, PositionAnalysis
+from src.distill.reasoning_trace import ReasoningTraceGenerator, TablebaseInfo
+from src.distill.stockfish_teacher import MoveAnalysis, PositionAnalysis
 
 
 def make_analysis(
