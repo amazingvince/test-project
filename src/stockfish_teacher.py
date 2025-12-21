@@ -30,6 +30,7 @@ class MoveAnalysis:
     category: str  # Human-readable category
     mate_in: Optional[int] = None
     win_probability: float = 0.5  # Win probability (0.0 to 1.0)
+    pv_uci: List[str] = field(default_factory=list)
     
     def format_for_thinking(self, is_best: bool = False) -> str:
         """Format move for inclusion in thinking tags using win probability."""
@@ -77,6 +78,14 @@ class PositionAnalysis:
 
     # Top-k that were deeply analyzed
     top_k_moves: List[str] = field(default_factory=list)
+
+    # Optional shallow pass scores (for trap detection)
+    shallow_move_cps: Dict[str, int] = field(default_factory=dict)
+    shallow_move_win_probs: Dict[str, float] = field(default_factory=dict)
+
+    # Optional confirm (extra-deep) scores for trap confirmation
+    confirm_move_cps: Dict[str, int] = field(default_factory=dict)
+    confirm_move_win_probs: Dict[str, float] = field(default_factory=dict)
     
     def get_thinking_text(self, randomize_order: bool = True, max_display: int = 5) -> str:
         """
@@ -282,6 +291,8 @@ class StockfishWorker:
         nodes: Optional[int] = None,
         shallow_depth: int = 0,
         shallow_max_moves: Optional[int] = None,
+        confirm_depth: int = 0,
+        confirm_top_k: int = 0,
         prob_mode: str = "cp",
         wdl_temperature: float = 1.0,
     ):
@@ -296,6 +307,8 @@ class StockfishWorker:
         self.nodes = nodes
         self.shallow_depth = shallow_depth
         self.shallow_max_moves = shallow_max_moves
+        self.confirm_depth = confirm_depth
+        self.confirm_top_k = confirm_top_k
         self.prob_mode = prob_mode
         self.wdl_temperature = 1.0 if wdl_temperature is None else wdl_temperature
         self._engine: Optional[chess.engine.SimpleEngine] = None
@@ -342,6 +355,8 @@ class StockfishWorker:
         nodes: Optional[int] = None,
         shallow_depth: Optional[int] = None,
         shallow_max_moves: Optional[int] = None,
+        confirm_depth: Optional[int] = None,
+        confirm_top_k: Optional[int] = None,
         prob_mode: Optional[str] = None,
         wdl_temperature: Optional[float] = None,
     ) -> PositionAnalysis:
@@ -379,6 +394,12 @@ class StockfishWorker:
             resolved_shallow_max_moves = (
                 self.shallow_max_moves if shallow_max_moves is None else shallow_max_moves
             )
+            resolved_confirm_depth = (
+                self.confirm_depth if confirm_depth is None else confirm_depth
+            )
+            resolved_confirm_top_k = (
+                self.confirm_top_k if confirm_top_k is None else confirm_top_k
+            )
             resolved_prob_mode = self.prob_mode if prob_mode is None else prob_mode
             resolved_wdl_temperature = (
                 self.wdl_temperature if wdl_temperature is None else wdl_temperature
@@ -390,6 +411,9 @@ class StockfishWorker:
                 resolved_shallow_depth = 0
             if resolved_time_limit_ms is not None or resolved_nodes is not None:
                 resolved_depth = None
+            if resolved_confirm_depth is not None and resolved_confirm_depth <= 0:
+                resolved_confirm_depth = 0
+            resolved_confirm_top_k = max(int(resolved_confirm_top_k or 0), 0)
 
             if resolved_prob_mode not in {"cp", "wdl"}:
                 raise ValueError(f"Unsupported prob_mode: {resolved_prob_mode}")
@@ -398,6 +422,10 @@ class StockfishWorker:
 
             move_cps: Dict[str, int] = {}
             move_win_probs: Dict[str, float] = {}
+            shallow_move_cps: Dict[str, int] = {}
+            shallow_move_win_probs: Dict[str, float] = {}
+            confirm_move_cps: Dict[str, int] = {}
+            confirm_move_win_probs: Dict[str, float] = {}
             move_analyses: List[MoveAnalysis] = []
             best_cp = None
             best_move_uci = None
@@ -442,6 +470,8 @@ class StockfishWorker:
                                 win_prob = cp_to_win_probability(cp)
 
                         uci = move.uci()
+                        shallow_move_cps[uci] = cp
+                        shallow_move_win_probs[uci] = win_prob
                         move_cps[uci] = cp
                         move_win_probs[uci] = win_prob
 
@@ -464,6 +494,7 @@ class StockfishWorker:
                     continue
 
                 pv_moves = info['pv']
+                pv_uci = [pv_move.uci() for pv_move in pv_moves[:10]]
                 move = pv_moves[0]
                 score = info.get('score')
 
@@ -490,7 +521,7 @@ class StockfishWorker:
 
                 move_cps[uci] = cp
                 move_win_probs[uci] = win_prob
-                deep_entries.append((uci, san, cp, mate_in, win_prob, pv_moves))
+                deep_entries.append((uci, san, cp, mate_in, win_prob, pv_moves, pv_uci))
 
                 if best_cp is None or cp > best_cp:
                     best_cp = cp
@@ -518,7 +549,7 @@ class StockfishWorker:
             if best_cp is None:
                 best_cp = 0
 
-            for uci, san, cp, mate_in, win_prob in deep_entries:
+            for uci, san, cp, mate_in, win_prob, _, pv_uci in deep_entries:
                 cp_loss = best_cp - cp
                 category = categorize_move(cp_loss, mate_in)
 
@@ -530,9 +561,70 @@ class StockfishWorker:
                     category=category,
                     mate_in=mate_in,
                     win_probability=win_prob,
+                    pv_uci=pv_uci,
                 ))
 
             move_analyses.sort(key=lambda x: x.centipawn, reverse=True)
+
+            # Optional confirm pass at higher depth for trap detection
+            if resolved_confirm_depth and resolved_confirm_top_k > 0:
+                confirm_candidates: List[Tuple[float, str]] = []
+                if shallow_move_cps:
+                    for uci, san, cp, mate_in, win_prob, pv_moves, _ in deep_entries:
+                        shallow_cp = shallow_move_cps.get(uci)
+                        if shallow_cp is None:
+                            continue
+                        swing = abs(cp - shallow_cp)
+                        confirm_candidates.append((swing, uci))
+                    confirm_candidates.sort(key=lambda x: x[0], reverse=True)
+                else:
+                    confirm_candidates = [(0.0, uci) for uci, _, _, _, _, _, _ in deep_entries]
+
+                confirm_candidates = confirm_candidates[:resolved_confirm_top_k]
+                if confirm_candidates:
+                    confirm_limit = self._build_limit(
+                        resolved_confirm_depth,
+                        None,
+                        None,
+                    )
+                    for _, uci in confirm_candidates:
+                        try:
+                            move = chess.Move.from_uci(uci)
+                        except ValueError:
+                            continue
+                        if move not in board.legal_moves:
+                            continue
+                        board_after = board.copy()
+                        board_after.push(move)
+                        try:
+                            confirm_result = engine.analyse(
+                                board_after,
+                                confirm_limit,
+                                multipv=1,
+                            )
+                        except Exception:
+                            continue
+                        info = self._normalize_analysis_result(confirm_result)[0]
+                        score = info.get("score")
+                        if score is None:
+                            continue
+                        pov_score = score.pov(board_after.turn)
+                        if pov_score.is_mate():
+                            mate_in = pov_score.mate()
+                            cp_after = 30000 if mate_in > 0 else -30000
+                            win_prob_opponent = 1.0 if mate_in > 0 else 0.0
+                        else:
+                            cp_after = pov_score.score()
+                            try:
+                                wdl = pov_score.wdl()
+                                win_prob_opponent = (wdl.wins + wdl.draws * 0.5) / 1000.0
+                            except Exception:
+                                win_prob_opponent = cp_to_win_probability(cp_after)
+
+                        cp_original = -cp_after
+                        win_prob_original = 1.0 - win_prob_opponent
+                        confirm_move_cps[uci] = cp_original
+                        confirm_move_win_probs[uci] = win_prob_original
 
             # Convert to probability distribution
             if resolved_prob_mode == "wdl":
@@ -568,7 +660,11 @@ class StockfishWorker:
                 best_score_cp=best_cp or 0,
                 best_pv=best_pv,
                 move_probs=move_probs,
-                top_k_moves=[ma.uci for ma in move_analyses]
+                top_k_moves=[ma.uci for ma in move_analyses],
+                shallow_move_cps=shallow_move_cps,
+                shallow_move_win_probs=shallow_move_win_probs,
+                confirm_move_cps=confirm_move_cps,
+                confirm_move_win_probs=confirm_move_win_probs,
             )
     
     def close(self):
@@ -602,6 +698,8 @@ class StockfishTeacher:
         nodes: Optional[int] = None,
         shallow_depth: int = 0,
         shallow_max_moves: Optional[int] = None,
+        confirm_depth: int = 0,
+        confirm_top_k: int = 0,
         prob_mode: str = "cp",
         wdl_temperature: float = 1.0,
         cache_size: int = 0,
@@ -638,6 +736,8 @@ class StockfishTeacher:
         self.nodes = nodes
         self.shallow_depth = shallow_depth
         self.shallow_max_moves = shallow_max_moves
+        self.confirm_depth = confirm_depth
+        self.confirm_top_k = confirm_top_k
         self.prob_mode = prob_mode
         self.wdl_temperature = 1.0 if wdl_temperature is None else wdl_temperature
         self.cache_size = max(cache_size or 0, 0)
@@ -697,6 +797,8 @@ class StockfishTeacher:
                 nodes=self.nodes,
                 shallow_depth=self.shallow_depth,
                 shallow_max_moves=self.shallow_max_moves,
+                confirm_depth=self.confirm_depth,
+                confirm_top_k=self.confirm_top_k,
                 prob_mode=self.prob_mode,
                 wdl_temperature=self.wdl_temperature,
             )
@@ -713,6 +815,8 @@ class StockfishTeacher:
         nodes: Optional[int] = None,
         shallow_depth: Optional[int] = None,
         shallow_max_moves: Optional[int] = None,
+        confirm_depth: Optional[int] = None,
+        confirm_top_k: Optional[int] = None,
         prob_mode: Optional[str] = None,
         wdl_temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -725,6 +829,8 @@ class StockfishTeacher:
             "shallow_max_moves": (
                 self.shallow_max_moves if shallow_max_moves is None else shallow_max_moves
             ),
+            "confirm_depth": self.confirm_depth if confirm_depth is None else confirm_depth,
+            "confirm_top_k": self.confirm_top_k if confirm_top_k is None else confirm_top_k,
             "prob_mode": self.prob_mode if prob_mode is None else prob_mode,
             "wdl_temperature": self.wdl_temperature if wdl_temperature is None else wdl_temperature,
         }
@@ -738,6 +844,8 @@ class StockfishTeacher:
             settings["nodes"],
             settings["shallow_depth"],
             settings["shallow_max_moves"],
+            settings["confirm_depth"],
+            settings["confirm_top_k"],
             settings["prob_mode"],
             settings["wdl_temperature"],
             self.temperature,
@@ -808,6 +916,8 @@ class StockfishTeacher:
         nodes: Optional[int] = None,
         shallow_depth: Optional[int] = None,
         shallow_max_moves: Optional[int] = None,
+        confirm_depth: Optional[int] = None,
+        confirm_top_k: Optional[int] = None,
         prob_mode: Optional[str] = None,
         wdl_temperature: Optional[float] = None,
     ) -> PositionAnalysis:
@@ -835,6 +945,8 @@ class StockfishTeacher:
             nodes=nodes,
             shallow_depth=shallow_depth,
             shallow_max_moves=shallow_max_moves,
+            confirm_depth=confirm_depth,
+            confirm_top_k=confirm_top_k,
             prob_mode=prob_mode,
             wdl_temperature=wdl_temperature,
         )
@@ -850,6 +962,8 @@ class StockfishTeacher:
         nodes: Optional[int] = None,
         shallow_depth: Optional[int] = None,
         shallow_max_moves: Optional[int] = None,
+        confirm_depth: Optional[int] = None,
+        confirm_top_k: Optional[int] = None,
         prob_mode: Optional[str] = None,
         wdl_temperature: Optional[float] = None,
     ) -> Future:
@@ -865,6 +979,8 @@ class StockfishTeacher:
             nodes=nodes,
             shallow_depth=shallow_depth,
             shallow_max_moves=shallow_max_moves,
+            confirm_depth=confirm_depth,
+            confirm_top_k=confirm_top_k,
             prob_mode=prob_mode,
             wdl_temperature=wdl_temperature,
         )
@@ -897,6 +1013,8 @@ class StockfishTeacher:
             "nodes",
             "shallow_depth",
             "shallow_max_moves",
+            "confirm_depth",
+            "confirm_top_k",
             "prob_mode",
             "wdl_temperature",
         }

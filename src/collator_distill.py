@@ -25,6 +25,7 @@ from .formatting_distill import (
     DISTILLATION_PROMPT_TEMPLATE_NO_BOARD,
     DISTILLATION_RESPONSE_TEMPLATE,
 )
+from .reasoning_trace import ReasoningTraceGenerator
 from .chess_utils import render_board_utf, get_legal_moves_uci
 
 
@@ -51,6 +52,8 @@ class DistillationCollator:
     pv_length: int = 5
     include_board: bool = True
     source_overrides: Optional[Dict[str, Dict[str, Any]]] = None
+    reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
+    force_best_move: bool = False
     seed: Optional[int] = None
     
     def __post_init__(self):
@@ -141,6 +144,9 @@ class DistillationCollator:
                     randomize_order=self.randomize_order,
                     pv_length=self.pv_length,
                     include_board=self.include_board,
+                    source=ex.get('source'),
+                    reasoning_trace_generator=self.reasoning_trace_generator,
+                    force_best_move=self.force_best_move,
                     rng=batch_rng,
                 )
                 
@@ -299,6 +305,8 @@ class PrecomputedDistillationCollator:
     randomize_order: bool = True
     pv_length: int = 5
     include_board: bool = True
+    reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
+    force_best_move: bool = False
     seed: Optional[int] = None
     
     def __post_init__(self):
@@ -346,7 +354,12 @@ class PrecomputedDistillationCollator:
         
         for ex in examples:
             # Get or regenerate messages
-            if 'messages' in ex and not self.randomize_order:
+            if (
+                'messages' in ex
+                and not self.randomize_order
+                and self.reasoning_trace_generator is None
+                and not self.force_best_move
+            ):
                 messages = ex['messages']
             else:
                 # Regenerate with new randomization
@@ -400,6 +413,7 @@ class PrecomputedDistillationCollator:
                     category=mv.get('category', 'unknown'),
                     mate_in=mv.get('mate_in'),
                     win_probability=mv.get('win_probability', 0.5),
+                    pv_uci=mv.get('pv_uci', []),
                 ))
         
         analysis = PositionAnalysis(
@@ -411,6 +425,10 @@ class PrecomputedDistillationCollator:
             best_pv=example.get('best_pv', []),
             move_probs=example.get('move_probs', {}),
             top_k_moves=example.get('top_k_moves', []),
+            shallow_move_cps=example.get('shallow_move_cps', {}),
+            shallow_move_win_probs=example.get('shallow_move_win_probs', {}),
+            confirm_move_cps=example.get('confirm_move_cps', {}),
+            confirm_move_win_probs=example.get('confirm_move_win_probs', {}),
         )
 
         position = {
@@ -418,6 +436,7 @@ class PrecomputedDistillationCollator:
             'target_move_uci': example['target_move_uci'],
             'legal_moves_uci': example.get('legal_moves_uci', ''),
             'board_utf': example.get('board_utf', ''),
+            'source': example.get('source'),
         }
 
         result = position_to_messages_distill(
@@ -427,6 +446,8 @@ class PrecomputedDistillationCollator:
             randomize_order=self.randomize_order,
             pv_length=self.pv_length,
             include_board=self.include_board,
+            reasoning_trace_generator=self.reasoning_trace_generator,
+            force_best_move=self.force_best_move,
             rng=rng,
         )
 

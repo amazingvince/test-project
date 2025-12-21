@@ -37,6 +37,7 @@ from src.chess_utils import (
     get_first_legal_move,
 )
 from src.formatting_distill import create_distillation_example
+from src.reasoning_trace import ReasoningTraceGenerator
 
 
 def find_stockfish() -> Optional[str]:
@@ -281,6 +282,8 @@ def analyze_and_format_batch(
     config: Dict[str, Any],
     rng: random.Random,
     source_overrides: Optional[Dict[str, Dict[str, Any]]] = None,
+    reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None,
+    force_best_move: bool = False,
 ) -> list:
     """
     Analyze positions and create distillation examples.
@@ -313,6 +316,9 @@ def analyze_and_format_batch(
                 randomize_order=format_config.get('randomize_order', True),
                 pv_length=format_config.get('pv_length', 5),
                 include_board=format_config.get('include_board', True),
+                source=pos.get('source'),
+                reasoning_trace_generator=reasoning_trace_generator,
+                force_best_move=force_best_move,
                 rng=rng,
             )
 
@@ -335,6 +341,7 @@ def analyze_and_format_batch(
                     'category': ma.category,
                     'mate_in': ma.mate_in,
                     'win_probability': ma.win_probability,
+                    'pv_uci': ma.pv_uci,
                 }
                 for ma in analysis.move_analyses
             ]
@@ -441,6 +448,19 @@ def main():
     distill_config = config.get('distillation', {})
     data_config = config.get('data', {})
     source_overrides = stockfish_config.get('source_overrides', {})
+    reasoning_trace_config = config.get('reasoning_trace', {})
+    trace_enabled = reasoning_trace_config.get('enabled', False)
+    force_best_move = reasoning_trace_config.get('always_choose_best_move', False)
+    reasoning_trace_generator = None
+    if trace_enabled:
+        reasoning_trace_generator = ReasoningTraceGenerator(reasoning_trace_config)
+        trace_status = reasoning_trace_generator.status()
+        print(
+            "Reasoning trace enabled: "
+            f"opening={trace_status.get('opening_available')}, "
+            f"tablebase={trace_status.get('tablebase_available')}, "
+            f"force_best={force_best_move}"
+        )
     
     output_path = args.output or './data/chess_distill'
     target_size = args.size or data_config.get('target_size', 100000)
@@ -464,6 +484,8 @@ def main():
         args.shallow_max_moves if args.shallow_max_moves is not None
         else stockfish_config.get('shallow_max_moves')
     )
+    confirm_depth = stockfish_config.get('confirm_depth', 0)
+    confirm_top_k = stockfish_config.get('confirm_top_k', 0)
     cache_size = (
         args.cache_size if args.cache_size is not None
         else stockfish_config.get('cache_size', 0)
@@ -514,6 +536,9 @@ def main():
         print(f"  Shallow depth: {shallow_depth}")
         if shallow_max_moves is not None:
             print(f"  Shallow max moves: {shallow_max_moves}")
+    if confirm_depth:
+        print(f"  Confirm depth: {confirm_depth}")
+        print(f"  Confirm top-k: {confirm_top_k}")
     print(f"  Prob mode: {prob_mode}")
     if prob_mode == "wdl":
         print(f"  WDL temperature: {wdl_temperature}")
@@ -540,6 +565,8 @@ def main():
             nodes=nodes,
             shallow_depth=shallow_depth,
             shallow_max_moves=shallow_max_moves,
+            confirm_depth=confirm_depth,
+            confirm_top_k=confirm_top_k,
             prob_mode=prob_mode,
             wdl_temperature=wdl_temperature,
             cache_size=cache_size,
@@ -563,6 +590,8 @@ def main():
         nodes=nodes,
         shallow_depth=shallow_depth,
         shallow_max_moves=shallow_max_moves,
+        confirm_depth=confirm_depth,
+        confirm_top_k=confirm_top_k,
         prob_mode=prob_mode,
         wdl_temperature=wdl_temperature,
         cache_size=cache_size,
@@ -593,6 +622,8 @@ def main():
                 config,
                 rng,
                 source_overrides=source_overrides,
+                reasoning_trace_generator=reasoning_trace_generator,
+                force_best_move=force_best_move,
             )
             all_examples.extend(examples)
         
@@ -621,6 +652,8 @@ def main():
                 config,
                 rng,
                 source_overrides=source_overrides,
+                reasoning_trace_generator=reasoning_trace_generator,
+                force_best_move=force_best_move,
             )
             all_examples.extend(examples)
         

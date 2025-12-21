@@ -158,6 +158,7 @@ from src.collator_distill import (
     PrecomputedDistillationCollator,
 )
 from src.stockfish_teacher import StockfishTeacher
+from src.reasoning_trace import ReasoningTraceGenerator
 
 
 # ============================================================================
@@ -845,6 +846,22 @@ def create_distillation_trainer(
     training_config = config.get('training', {})
     model_config = config.get('model', {})
     formatting_config = config.get('formatting', {})
+    reasoning_trace_config = config.get('reasoning_trace', {})
+    trace_enabled = reasoning_trace_config.get('enabled', False)
+    force_best_move = reasoning_trace_config.get('always_choose_best_move', False)
+    reasoning_trace_generator = None
+    if trace_enabled:
+        reasoning_trace_generator = ReasoningTraceGenerator(
+            reasoning_trace_config,
+            tokenizer=tokenizer,
+        )
+        trace_status = reasoning_trace_generator.status()
+        print(
+            "Reasoning trace enabled: "
+            f"opening={trace_status.get('opening_available')}, "
+            f"tablebase={trace_status.get('tablebase_available')}, "
+            f"force_best={force_best_move}"
+        )
     distill_config = config.get('distillation', {})
     stockfish_config = config.get('stockfish', {})
 
@@ -951,6 +968,8 @@ def create_distillation_trainer(
             pv_length=formatting_config.get('pv_length', 5),
             include_board=formatting_config.get('include_board', True),
             source_overrides=stockfish_config.get('source_overrides'),
+            reasoning_trace_generator=reasoning_trace_generator,
+            force_best_move=force_best_move,
             seed=training_config.get('seed', 42),
         )
     else:
@@ -962,6 +981,8 @@ def create_distillation_trainer(
             randomize_order=formatting_config.get('randomize_order', True),
             pv_length=formatting_config.get('pv_length', 5),
             include_board=formatting_config.get('include_board', True),
+            reasoning_trace_generator=reasoning_trace_generator,
+            force_best_move=force_best_move,
             seed=training_config.get('seed', 42),
         )
 
@@ -1235,6 +1256,9 @@ def main():
             print(f"  Shallow depth: {stockfish_config.get('shallow_depth')}")
             if stockfish_config.get('shallow_max_moves') is not None:
                 print(f"  Shallow max moves: {stockfish_config.get('shallow_max_moves')}")
+        if stockfish_config.get('confirm_depth', 0):
+            print(f"  Confirm depth: {stockfish_config.get('confirm_depth')}")
+            print(f"  Confirm top-k: {stockfish_config.get('confirm_top_k', 0)}")
         print(f"  Prob mode: {stockfish_config.get('prob_mode', 'cp')}")
         if stockfish_config.get('prob_mode', 'cp') == 'wdl':
             print(f"  WDL temperature: {stockfish_config.get('wdl_temperature', 1.0)}")
@@ -1254,6 +1278,8 @@ def main():
             nodes=stockfish_config.get('nodes'),
             shallow_depth=stockfish_config.get('shallow_depth', 0),
             shallow_max_moves=stockfish_config.get('shallow_max_moves'),
+            confirm_depth=stockfish_config.get('confirm_depth', 0),
+            confirm_top_k=stockfish_config.get('confirm_top_k', 0),
             prob_mode=stockfish_config.get('prob_mode', 'cp'),
             wdl_temperature=stockfish_config.get('wdl_temperature', 1.0),
             cache_size=stockfish_config.get('cache_size', 0),

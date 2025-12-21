@@ -105,6 +105,8 @@ try:
         DISTILLATION_PROMPT_TEMPLATE,
         DISTILLATION_RESPONSE_TEMPLATE,
     )
+
+    from .reasoning_trace import ReasoningTraceGenerator
     
     from .distillation_loss import (
         ChessDistillationLoss,
@@ -208,6 +210,7 @@ if DISTILLATION_AVAILABLE:
         'generate_thinking_text',
         'DISTILLATION_PROMPT_TEMPLATE',
         'DISTILLATION_RESPONSE_TEMPLATE',
+        'ReasoningTraceGenerator',
         
         # Distillation loss
         'ChessDistillationLoss',

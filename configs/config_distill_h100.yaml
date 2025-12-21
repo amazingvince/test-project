@@ -88,6 +88,10 @@ stockfish:
   shallow_depth: 4
   shallow_max_moves: 64
 
+  # Optional confirm pass for trap detection (0 disables)
+  confirm_depth: 14
+  confirm_top_k: 2
+
   # Hash table size per worker (MB)
   # Total: num_workers * hash_mb = 16 * 64 = 1GB
   hash_mb_per_worker: 64
@@ -197,6 +201,92 @@ formatting:
 
   # Number of moves to show in principal variation (Best line: ...)
   pv_length: 5
+
+# Reasoning Trace Configuration
+# ============================
+# Enables longer, human-like reasoning traces in <think> tags.
+# Uses Stockfish analysis data already computed for distillation.
+reasoning_trace:
+  enabled: true
+
+  # Always output Stockfish's best move in <uci_move>
+  always_choose_best_move: true
+
+  # Max tokens for the reasoning trace (approximate if tokenizer unavailable)
+  max_trace_tokens: 1024
+
+  # Move notation in trace: "uci" or "san"
+  move_notation: "uci"
+
+  # Candidate selection
+  min_candidates: 3
+  max_candidates: 5
+  candidate_order: "shuffled"
+
+  # Content toggles
+  include_opening: true
+  include_tablebase: true
+  include_orientation: true
+  include_assessment: true
+  include_comparison: true
+  include_reconsideration: true
+  include_dead_end: true
+  include_pv: true
+  max_pv_length: 8
+  include_threat_scan: true
+  threat_max_checks: 2
+  threat_max_hanging: 2
+  threat_scan_include_empty: false
+  include_plan: true
+  plan_prob: 0.5
+  include_opponent_perspective: true
+  opponent_perspective_prob: 0.4
+  unclear_win_margin: 0.04
+  include_motifs: true
+  include_quiet_move_motif: true
+  perpetual_max_plies: 6
+  max_motifs_per_candidate: 1
+  include_positional_cues: true
+  max_positional_cues: 4
+  pv_prune_quiet: true
+  pv_prune_quiet_plies: 2
+  pv_prune_min_moves: 2
+  pv_quiet_summary: true
+  include_trap_detection: true
+  # Requires stockfish.shallow_depth > 0 for shallow-vs-deep comparison
+  trap_min_cp_swing: 80
+  trap_min_win_prob_swing: 0.12
+  trap_shallow_good_cp: 30
+  trap_shallow_bad_cp: 120
+  trap_shallow_good_win_prob: 0.06
+  trap_shallow_bad_win_prob: 0.18
+  trap_confirm_cp_tolerance: 30
+  trap_confirm_win_prob_tolerance: 0.05
+  trap_refutation_max_len: 4
+
+  # Optional data paths (if present)
+  # opening_paths:
+  #   - "./data/openings/a.tsv"
+  #   - "./data/openings/b.tsv"
+  # tablebase_paths:
+  #   - "./data/syzygy"
+
+  # Variety controls
+  reconsideration_prob: 0.4
+  dead_end_prob: 0.4
+  comparison_prob: 0.5
+  style_weights:
+    thorough: 0.6
+    concise: 0.25
+    tactical: 0.15
+
+  # Source-aware language tweaks
+  source_overrides:
+    puzzle:
+      style: "tactical"
+      max_candidates: 4
+    game:
+      style: "thorough"
 
 # Data Configuration
 data:

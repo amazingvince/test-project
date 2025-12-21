@@ -18,6 +18,7 @@
 10. [Example Outputs](#example-outputs)
 11. [File Structure](#file-structure)
 12. [Dependencies](#dependencies)
+13. [Further Enrichment Ideas](#further-enrichment-ideas)
 
 ---
 
@@ -206,6 +207,14 @@ class EvalInsights:
 | Hanging Piece | Undefended piece under attack |
 | Trapped Piece | Piece with no safe squares, under attack |
 | Overloaded Defender | Piece defending multiple threats |
+| Deflection | Capture that removes a key defender |
+| X-ray Attack | Slider pressures a high-value piece through a blocker |
+| Decoy | Check that lures the king onto a vulnerable square |
+| Sacrifice | Forcing move that leaves a piece en prise |
+| Zwischenzug | Forcing intermezzo while a piece is hanging |
+| Stalemate Trick | Move that forces immediate stalemate |
+| Perpetual Check Idea | Multiple checks in the PV suggest a perpetual |
+| Quiet Move | Non-capture, non-check improving move |
 
 #### Positional Motifs
 | Pattern | Detection Logic |
@@ -285,6 +294,9 @@ class TrapInfo:
     deep_assessment: str     # "actually problematic"
     refutation_line: List[str]  # How opponent punishes
 ```
+
+Optional detail: if per-candidate PVs are available, the generator can emit a short
+refutation line (UCI by default) using the config key `trap_refutation_max_len`.
 
 ---
 
@@ -1734,6 +1746,10 @@ Vary certainty in language:
 "I'm between two moves here..."
 ```
 
+Implementation note: the generator now supports optional plan and opponent-perspective
+lines plus PV pruning (quiet-line summaries) via config flags such as
+`include_plan`, `include_opponent_perspective`, and `pv_prune_quiet`.
+
 ---
 
 ## Summary
@@ -1857,3 +1873,99 @@ things closed and trade pieces..."
 
 
 These additions would make the traces feel like genuine exploration rather than retroactive justification of the engine's choice. The key is that the best move emerges from the process rather than being stated upfront.
+
+---
+
+## Further Enrichment Ideas
+
+### A. Threat and Defense Scan (Fast Pass)
+Before listing candidates, add a short "threat scan" to mimic how humans triage:
+
+- Identify immediate checks for both sides
+- Identify hanging pieces (undefended and attacked)
+- Identify a direct threat (mate, fork, or material win) if present
+
+Example:
+```
+First, I should check for tactics. The e5 pawn is loose and the king is still in the center, so there might be a forcing line.
+```
+
+### B. Tactical Micro-Motifs (Expanded)
+Add more tactical patterns for richer language:
+
+- deflection, decoy, clearance, interference
+- attraction, overloading, x-ray attack
+- mate net, perpetual check, stalemate trap
+
+These can be detected with shallow search + piece-attack queries and used in template phrases.
+
+### C. Positional Signal Bank
+Add a compact set of positional cues tied to piece placement and pawn structure:
+
+- good vs bad bishop (pawn color lock)
+- pawn majority targets (e.g., queenside majority)
+- rook on open file or 7th rank
+- outpost squares that cannot be chased by pawns
+
+Use this to enrich assessment lines without numeric scores.
+
+### D. Variation Management and Pruning
+Avoid overly long lines by using a "quiescence-like" policy:
+
+1. Expand only checks, captures, and immediate threats
+2. If a line is quiet after 2 ply, summarize it in one sentence
+3. Prefer the best line length for puzzles, shorter for games
+
+This keeps the reasoning tight and readable.
+
+### E. Consistency Guards (Trace Hygiene)
+Add simple guardrails to reduce contradictions:
+
+- If a move is labeled "best", do not call it risky later
+- If win probabilities are close, use "unclear" language
+- If tablebase says "draw", avoid claiming a win
+
+This preserves trust in the trace.
+
+### F. Source-Conditioned Dialects
+Different sources can bias language:
+
+- puzzles: "forcing", "tactical", "must be precise"
+- games: "practical", "safe", "keep options open"
+
+This helps the model learn stylistic intent from the source.
+
+### G. Confidence Banding
+Convert win probability bands into confidence phrases:
+
+- 0.60+ -> "feels strong"
+- 0.50-0.60 -> "seems playable"
+- 0.40-0.50 -> "looks risky"
+
+This yields stable, repeatable language without numbers.
+
+### H. Distillation Alignment Note
+Keep the trace anchored to Stockfish's best move, but allow the target move to be the game or puzzle move if desired. This matches:
+
+- CE: teaches the reasoning narrative
+- KL: teaches the soft move distribution
+
+This separation prevents the reasoning from conflicting with training targets.
+
+### I. Output Guardrails
+Add final checks before emitting:
+
+- UCI notation only for moves
+- Ensure the best move appears in the conclusion
+- Enforce token budget by trimming optional sections
+- If something fails, fall back to a short but valid trace
+
+This guarantees training stability.
+
+### J. Two-Phase Narratives
+Optional "intuition then verification" flow:
+
+1. Intuition: "The move that jumps out is ..."
+2. Verification: "Checking the line ... it holds up."
+
+This reads naturally and fits puzzle-style positions.

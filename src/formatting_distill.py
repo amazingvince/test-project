@@ -14,10 +14,12 @@ from pathlib import Path
 # Handle both relative imports (when used as module) and absolute imports (when run as script)
 try:
     from .stockfish_teacher import PositionAnalysis, MoveAnalysis
+    from .reasoning_trace import ReasoningTraceGenerator
 except ImportError:
     # Add parent directory to path when running as script
     sys.path.insert(0, str(Path(__file__).parent))
     from stockfish_teacher import PositionAnalysis, MoveAnalysis
+    from reasoning_trace import ReasoningTraceGenerator
 
 # =============================================================================
 # Prompt Templates for Distillation
@@ -264,6 +266,8 @@ def position_to_messages_distill(
     randomize_order: bool = True,
     pv_length: int = 5,
     include_board: bool = True,
+    reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None,
+    force_best_move: bool = False,
     rng: Optional[random.Random] = None,
 ) -> Dict[str, Any]:
     """
@@ -283,28 +287,38 @@ def position_to_messages_distill(
         Dict with 'messages' key containing chat format
     """
     target_move_uci = position['target_move_uci']
+    move_for_output = target_move_uci
+    if force_best_move and analysis.best_move_uci:
+        move_for_output = analysis.best_move_uci
 
     # Determine if target is best move or not
-    is_best = (target_move_uci == analysis.best_move_uci)
+    is_best = (move_for_output == analysis.best_move_uci)
 
-    if is_best:
-        thinking = generate_thinking_text(
+    if reasoning_trace_generator is not None:
+        thinking = reasoning_trace_generator.generate(
+            position=position,
             analysis=analysis,
-            target_move_uci=target_move_uci,
-            max_display=max_display_moves,
-            randomize_order=randomize_order,
-            pv_length=pv_length,
             rng=rng,
         )
     else:
-        thinking = generate_thinking_text_for_non_best_move(
-            analysis=analysis,
-            target_move_uci=target_move_uci,
-            max_display=max_display_moves,
-            randomize_order=randomize_order,
-            pv_length=pv_length,
-            rng=rng,
-        )
+        if is_best:
+            thinking = generate_thinking_text(
+                analysis=analysis,
+                target_move_uci=move_for_output,
+                max_display=max_display_moves,
+                randomize_order=randomize_order,
+                pv_length=pv_length,
+                rng=rng,
+            )
+        else:
+            thinking = generate_thinking_text_for_non_best_move(
+                analysis=analysis,
+                target_move_uci=move_for_output,
+                max_display=max_display_moves,
+                randomize_order=randomize_order,
+                pv_length=pv_length,
+                rng=rng,
+            )
     
     # Format user content
     if include_board:
@@ -322,7 +336,7 @@ def position_to_messages_distill(
     # Format assistant content
     assistant_content = response_template.format(
         thinking=thinking,
-        move=target_move_uci,
+        move=move_for_output,
     )
     
     return {
@@ -342,6 +356,9 @@ def create_distillation_example(
     randomize_order: bool = True,
     pv_length: int = 5,
     include_board: bool = True,
+    source: Optional[str] = None,
+    reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None,
+    force_best_move: bool = False,
     rng: Optional[random.Random] = None,
 ) -> Dict[str, Any]:
     """
@@ -365,12 +382,18 @@ def create_distillation_example(
     # Get legal moves
     legal_moves_uci = ' '.join(m.uci() for m in board.legal_moves)
 
+    move_for_output = target_move_uci
+    if force_best_move and analysis.best_move_uci:
+        move_for_output = analysis.best_move_uci
+
     position = {
         'fen': fen,
-        'target_move_uci': target_move_uci,
+        'target_move_uci': move_for_output,
         'legal_moves_uci': legal_moves_uci,
         'board_utf': board_utf,
     }
+    if source is not None:
+        position['source'] = source
 
     messages_data = position_to_messages_distill(
         position=position,
@@ -379,25 +402,34 @@ def create_distillation_example(
         randomize_order=randomize_order,
         pv_length=pv_length,
         include_board=include_board,
+        reasoning_trace_generator=reasoning_trace_generator,
+        force_best_move=force_best_move,
         rng=rng,
     )
     
-    # Find target move info
-    target_prob = analysis.move_probs.get(target_move_uci, 0.0)
-    target_rank = -1
-    target_cp_loss = 0
-    
-    for i, ma in enumerate(analysis.move_analyses):
-        if ma.uci == target_move_uci:
-            target_rank = i + 1
-            target_cp_loss = ma.cp_loss
-            break
+    def _find_move_info(move_uci: str) -> Dict[str, Any]:
+        move_prob = analysis.move_probs.get(move_uci, 0.0)
+        move_rank = -1
+        move_cp_loss = 0
+        for i, ma in enumerate(analysis.move_analyses):
+            if ma.uci == move_uci:
+                move_rank = i + 1
+                move_cp_loss = ma.cp_loss
+                break
+        return {
+            "prob": move_prob,
+            "rank": move_rank,
+            "cp_loss": move_cp_loss,
+        }
+
+    target_info = _find_move_info(move_for_output)
+    source_info = _find_move_info(target_move_uci) if target_move_uci != move_for_output else None
     
     return {
         **messages_data,
         # Position data
         'fen': fen,
-        'target_move_uci': target_move_uci,
+        'target_move_uci': move_for_output,
         'legal_moves_uci': legal_moves_uci,
         'board_utf': board_utf,
         
@@ -407,15 +439,27 @@ def create_distillation_example(
         'best_score_cp': analysis.best_score_cp,
         
         # Target move quality
-        'target_move_rank': target_rank,
-        'target_move_cp_loss': target_cp_loss,
-        'target_move_prob': target_prob,
+        'target_move_rank': target_info['rank'],
+        'target_move_cp_loss': target_info['cp_loss'],
+        'target_move_prob': target_info['prob'],
         
         # Full probability distribution for distillation loss
         'move_probs': analysis.move_probs,
+
+        # Optional shallow pass data (for trap detection)
+        'shallow_move_cps': analysis.shallow_move_cps,
+        'shallow_move_win_probs': analysis.shallow_move_win_probs,
+        'confirm_move_cps': analysis.confirm_move_cps,
+        'confirm_move_win_probs': analysis.confirm_move_win_probs,
         
         # Top-k analyzed moves (for reference)
         'top_k_moves': analysis.top_k_moves,
+        **({
+            'source_target_move_uci': target_move_uci,
+            'source_target_move_rank': source_info['rank'],
+            'source_target_move_cp_loss': source_info['cp_loss'],
+            'source_target_move_prob': source_info['prob'],
+        } if source_info is not None else {}),
     }
 
 
@@ -432,6 +476,8 @@ def format_example_for_display(example: Dict[str, Any]) -> str:
     
     output.append(f"\nFEN: {example['fen']}")
     output.append(f"Target move: {example['target_move_uci']}")
+    if 'source_target_move_uci' in example:
+        output.append(f"Source move: {example['source_target_move_uci']}")
     output.append(f"Best move: {example['best_move_uci']} ({example['best_score_cp']:+d}cp)")
     output.append(f"Target rank: {example['target_move_rank']}")
     output.append(f"Target CP loss: {example['target_move_cp_loss']}")

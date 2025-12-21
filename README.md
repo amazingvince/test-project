@@ -18,6 +18,7 @@ Train language models to play chess using a two-stage approach:
 - **Optional Board Rendering**: Drop the board from distillation prompts to save tokens
 - **Shallow All-Moves Pass**: Cheap priors for legal moves in streaming distillation
 - **Stockfish LRU Cache**: Reuse analyses across repeated positions
+- **Reasoning Trace Generator**: Longer, human-like traces with optional opening and tablebase context
 
 ## Training Workflow
 
@@ -44,6 +45,8 @@ Thinking shows category + win probability for all moves:
 
 Best line: Nf3 d5 Nc3 Nc6 Bb5
 ```
+
+Optional: replace the move list with a configurable reasoning trace (see `reasoning_trace` settings).
 
 The model learns:
 1. **Position evaluation** (win probability categories)
@@ -72,6 +75,18 @@ brew install stockfish       # macOS
 ```bash
 # Inspect how <uci_move> and UCI moves are tokenized, plus stream a few samples
 python scripts/tokenizer_probe.py --config configs/config_distill.yaml --samples-per-source 2
+```
+
+### Optional: Openings + Tablebases
+
+```bash
+# Download lichess opening TSVs to ./data/openings
+python scripts/download_openings.py --output-dir ./data/openings
+
+# Download Syzygy tablebases (3-4-5 pieces) to ./data/syzygy
+# Use --dry-run first to see the file list
+python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5 --dry-run
+python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5
 ```
 
 ### 2. Stage 1: SFT Training
@@ -195,7 +210,7 @@ Playing e6 gives 46% win chance.
 - Move order is **randomized** to prevent the model from learning "first = best"
 - All moves show category + win probability (intuitive AlphaZero-style evaluation)
 - **"Playing X"** always shows Stockfish's best move and its win probability
-- **`<uci_move>`** is the target move from training data, learned via soft distribution (KL loss)
+- **`<uci_move>`** can be forced to Stockfish's best move via `reasoning_trace.always_choose_best_move`
 - The model learns the thinking text (CE loss) AND the probability distribution over all moves (KL loss)
 
 ## Key Design Decisions
@@ -271,6 +286,8 @@ stockfish:
   top_k: 5              # Moves for deep analysis (5-10 recommended)
   shallow_depth: 4      # Cheap all-moves pass (0 disables)
   shallow_max_moves: 64 # Cap shallow multipv
+  confirm_depth: 14     # Optional extra-deep confirm pass (0 disables)
+  confirm_top_k: 2      # Moves to confirm at confirm_depth
   num_workers: 8        # Parallel Stockfish instances
   threads_per_worker: 1 # Engine threads per worker
   prob_mode: "cp"       # "cp" or "wdl"
@@ -320,6 +337,54 @@ formatting:
   randomize_order: true    # CRITICAL: prevent shortcuts
   pv_length: 5             # Moves in "Best line:" (principal variation)
 ```
+
+### Reasoning Trace Settings
+
+```yaml
+reasoning_trace:
+  enabled: true
+  always_choose_best_move: true
+  max_trace_tokens: 1024
+  move_notation: "uci"
+  include_opening: true
+  include_tablebase: true
+  min_candidates: 3
+  max_candidates: 5
+  include_threat_scan: true
+  threat_max_checks: 2
+  threat_max_hanging: 2
+  include_plan: true
+  plan_prob: 0.5
+  include_opponent_perspective: true
+  opponent_perspective_prob: 0.4
+  unclear_win_margin: 0.04
+  include_motifs: true
+  include_quiet_move_motif: true
+  perpetual_max_plies: 6
+  max_motifs_per_candidate: 1
+  include_positional_cues: true
+  max_positional_cues: 4
+  pv_prune_quiet: true
+  pv_prune_quiet_plies: 2
+  pv_prune_min_moves: 2
+  pv_quiet_summary: true
+  include_trap_detection: true
+  trap_min_cp_swing: 80
+  trap_min_win_prob_swing: 0.12
+  trap_confirm_cp_tolerance: 30
+  trap_confirm_win_prob_tolerance: 0.05
+  trap_refutation_max_len: 4
+  style_weights:
+    thorough: 0.6
+    concise: 0.25
+    tactical: 0.15
+  source_overrides:
+    puzzle:
+      style: "tactical"
+      max_candidates: 4
+```
+
+Note: trap detection uses shallow‑vs‑deep comparison, so set `stockfish.shallow_depth > 0`.
 
 ### Training Eval Settings
 
@@ -377,9 +442,9 @@ This combined approach:
 - **CE loss**: Teaches the model to generate the thinking text (best move analysis, win probabilities, PV)
 - **KL loss**: Teaches the model the soft probability distribution over ALL legal moves
 
-**Key insight**: The thinking text always describes Stockfish's best move, but the `<uci_move>` output learns a soft distribution. This means:
-- The model learns to REASON about the best move (via CE loss on thinking)
-- The model learns to SAMPLE from a quality-weighted distribution (via KL loss)
+**Key insight**: The reasoning trace is anchored to Stockfish's best move. If `reasoning_trace.always_choose_best_move` is enabled, the `<uci_move>` output is also the best move; otherwise it can stay as the source move while KL still teaches the soft distribution. This means:
+- The model learns to reason about the best move (via CE loss on thinking)
+- The model learns a quality-weighted distribution (via KL loss)
 
 The KL (soft) loss teaches:
 - The full distribution over all moves
