@@ -1,0 +1,256 @@
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =============================================================================
+# Virtual Environments
+# =============================================================================
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+conda/
+.conda/
+
+# =============================================================================
+# IDEs and Editors
+# =============================================================================
+# VS Code
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# =============================================================================
+# OS Files
+# =============================================================================
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# Machine Learning / Model Files
+# =============================================================================
+# Model checkpoints and weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+checkpoints/
+checkpoint*/
+models/
+*.h5
+*.hdf5
+*.pb
+*.onnx
+*.tflite
+*.pkl
+*.pickle
+
+# HuggingFace
+.cache/
+.huggingface/
+hf_cache/
+transformers_cache/
+models--*/
+
+# Weights & Biases
+wandb/
+.wandb/
+
+# TensorBoard
+runs/
+logs/
+*.log
+tensorboard/
+tb_logs/
+
+# MLflow
+mlruns/
+
+# =============================================================================
+# Training Data and Outputs
+# =============================================================================
+# Processed datasets
+data/
+datasets/
+*.parquet
+*.arrow
+*.jsonl
+*.json.gz
+*.csv
+*.tsv
+
+# Training outputs
+outputs/
+output/
+results/
+experiments/
+runs/
+
+# Preprocessed data
+preprocessed/
+processed/
+cache/
+*.cache
+
+# =============================================================================
+# Configuration and Secrets
+# =============================================================================
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Secrets and API keys
+secrets/
+*.key
+*.pem
+*.p12
+*.pfx
+config_local.yaml
+config_secret.yaml
+*_secret.yaml
+*_local.yaml
+
+# =============================================================================
+# Temporary Files
+# =============================================================================
+*.tmp
+*.temp
+*.bak
+*.backup
+*.swp
+*.swo
+*~
+.tmp/
+temp/
+tmp/
+
+# =============================================================================
+# Testing and Coverage
+# =============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+*.cover
+*.py,cover
+.cache
+nosetests.xml
+coverage.xml
+*.xml
+
+# =============================================================================
+# Documentation Build
+# =============================================================================
+docs/_build/
+docs/.doctrees/
+site/
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+# Stockfish binaries (if downloaded)
+stockfish/
+stockfish_*/
+
+# Large evaluation outputs
+eval_results/
+evaluations/
+
+# Training scripts output
+*.sh.out
+*.sh.log
+
+# Accelerate cache
+.accelerate/
+
+# Distributed training
+deepspeed_logs/
+deepspeed_*/
+

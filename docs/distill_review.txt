@@ -1,0 +1,31 @@
+Chess distillation review findings (from prior review)
+=====================================================
+
+High / critical issues
+1) KL distillation was applied at the last non-pad token, which in the
+   response format is the closing </uci_move> tag (or EOS), not the move.
+   This makes the soft loss train the wrong token distribution.
+
+2) move_to_token_id only included UCI moves that were already single tokens.
+   For Qwen3 this is likely a small subset, so most legal moves were dropped
+   and the teacher distribution was renormalized or fell back to uniform.
+
+3) The mapping was built from the bare UCI string, but the actual response
+   contains the move inside <uci_move>...</uci_move> with no whitespace.
+   That can change tokenization for some tokenizers, leading to mismatches.
+
+Medium issues
+4) Stockfish temperature and min_probability were printed from config but
+   the teacher distribution was hard-coded to 100.0 / 0.001.
+
+5) Distillation hard targets were taken from the teacher top-1, not the
+   dataset move. This conflicts with the "played move" comment if you ever
+   enable hard loss in the distill loss (alpha < 1).
+
+6) The distillation metrics were averaged with a fixed divisor that can
+   underreport values and hide spikes.
+
+Notes
+- These issues explain why CE improves while soft loss collapses or looks
+  too small: the KL was not aligned to the actual move token, and/or most
+  move probabilities were unmapped in the vocab.

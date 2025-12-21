@@ -1,0 +1,91 @@
+# Chess LLM SFT Training Requirements
+# Optimized for RTX 5090 (Blackwell architecture)
+#
+# IMPORTANT SETUP NOTES:
+# This setup uses Liger Kernel for RoPE, RMSNorm, SwiGLU (NOT cross entropy)
+# and Cut Cross Entropy for memory-efficient weighted loss.
+# See docs/CCE_LIGER_INTEGRATION.md for the full explanation.
+
+# =============================================================================
+# Core Training - Minimum versions for RTX 5090 support
+# =============================================================================
+torch>=2.4.0  # RTX 5090 requires PyTorch with CUDA 12.8+ support
+transformers>=4.46.0  # 4.46+ includes gradient accumulation fix
+trl>=0.9.0
+accelerate>=0.34.0
+packaging
+ninja
+wheel 
+setuptools
+
+# =============================================================================
+# Memory Optimization
+# =============================================================================
+# Cut Cross Entropy - dramatically reduces memory for loss computation
+# Reduces loss memory from 24GB to 1MB for models with large vocabularies
+# 
+# INSTALL SEPARATELY (not available on PyPI):
+#   pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"
+#
+# With transformers integration:
+#   pip install "cut-cross-entropy[transformers] @ git+https://github.com/apple/ml-cross-entropy.git"
+
+# Liger Kernel - fused GPU kernels for faster training
+# NOTE: We use this for RoPE, RMSNorm, SwiGLU only (NOT cross entropy)
+# Cross entropy is handled by CCE which supports weighted loss
+liger-kernel>=0.5.0
+
+# Triton - required for both Liger and CCE kernels
+triton>=3.0.0
+
+# =============================================================================
+# Data Processing
+# =============================================================================
+datasets>=2.20.0
+python-chess>=1.10.0
+
+# Faster dataset downloads
+hf_transfer>=0.1.6
+
+# =============================================================================
+# Performance Monitoring
+# =============================================================================
+pynvml>=11.5.0  # GPU memory monitoring
+
+# =============================================================================
+# Utils
+# =============================================================================
+pyyaml>=6.0
+tqdm>=4.66.0
+wandb>=0.17.0
+huggingface_hub>=0.24.0
+
+# =============================================================================
+# Evaluation
+# =============================================================================
+stockfish>=3.28.0
+
+# =============================================================================
+# Optional: Flash Attention 2 (highly recommended)
+# =============================================================================
+# Requires separate installation:
+# pip install flash-attn --no-build-isolation
+# Or for pre-built wheels (check CUDA version compatibility):
+# pip install flash-attn==2.6.3
+
+# =============================================================================
+# Optional: Triton (for custom kernels including CCE)
+# =============================================================================
+# Usually installed as a dependency, but can specify version:
+# triton>=2.3.0
+
+# =============================================================================
+# Optional: DeepSpeed for multi-GPU training
+# =============================================================================
+# deepspeed>=0.14.0
+
+# =============================================================================
+# Development & Testing
+# =============================================================================
+pytest>=7.0.0
+pytest-timeout>=2.2.0

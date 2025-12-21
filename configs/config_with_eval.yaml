@@ -1,0 +1,166 @@
+# Chess LLM Training with Stockfish-Based Reward Shaping
+# =====================================================
+# This configuration enables distillation from Stockfish
+# by including move evaluations in thinking tags and
+# using win probability-based loss weighting.
+
+model:
+  name: "Qwen/Qwen3-0.6B"  # Or your preferred model
+  max_seq_length: 1024
+  attn_implementation: "flash_attention_2"
+  torch_dtype: "bfloat16"
+  
+training:
+  output_dir: "./outputs/chess-sft-eval"
+  
+  # Batch settings
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 8
+  
+  # Training duration
+  num_train_epochs: 3
+  max_steps: -1  # Use num_train_epochs
+  
+  # Learning rate
+  learning_rate: 2.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1
+  
+  # Optimizer
+  optim: "adamw_torch_fused"
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Logging
+  logging_steps: 50
+  report_to: "wandb"  # or "none" for no logging
+  run_name: "chess-stockfish-distill"
+  
+  # Saving
+  save_steps: 500
+  save_total_limit: 3
+  
+  # Evaluation
+  eval_strategy: "steps"
+  eval_steps: 500
+  
+  # Chess-specific evaluation
+  chess_eval_positions: 500
+  chess_eval_batch_size: 32
+  chess_eval_steps: 500
+  chess_eval_max_new_tokens: 128
+  
+  # Optimizations
+  bf16: true
+  tf32: true
+  gradient_checkpointing: true
+  torch_compile: false
+
+data:
+  # Dataset sources
+  games_dataset: "Lichess/standard-chess-games"
+  puzzles_dataset: "Lichess/chess-puzzles"
+  
+  # Target dataset size
+  target_size: 500000  # 500K positions
+  games_ratio: 0.7     # 70% games, 30% puzzles
+  
+  # Position sampling
+  min_elo: 1200
+  sample_rate: 0.3
+  skip_first_moves: 4
+  skip_last_moves: 2
+  
+  # Puzzle filtering
+  min_puzzle_rating: 1000
+  max_puzzle_rating: 2500
+  
+  # Processing
+  shuffle_buffer_size: 10000
+  eval_split_ratio: 0.02
+
+# Stockfish Evaluation Settings
+stockfish:
+  # Path to Stockfish binary (auto-detected if not specified)
+  # path: "/usr/bin/stockfish"
+  
+  # Analysis depth (higher = more accurate but slower)
+  depth: 12
+  
+  # Number of moves to analyze per position
+  # null = all legal moves, or set a number like 10 for top-10
+  multipv: null
+  
+  # Number of parallel Stockfish workers for preprocessing
+  workers: 8
+  
+  # Hash table size per worker (MB)
+  hash_mb: 64
+
+# Loss Weighting (Reward Shaping)
+loss_weighting:
+  enabled: true
+  
+  # Weight type determines how move quality affects training
+  # Options:
+  #   - "cp_loss": Based on centipawn loss (recommended)
+  #   - "rank": Based on move rank
+  #   - "combined": Mix of CP loss and rank
+  #   - "quality_gate": High weight if good, low otherwise
+  #   - "soft_rank": Exponential decay by rank
+  #   - "uniform": No quality weighting (baseline)
+  weight_type: "cp_loss"
+  
+  # Weight range
+  min_weight: 0.1   # Weight for worst moves
+  max_weight: 2.0   # Weight for best moves
+  
+  # Parameters for cp_loss weighting
+  max_cp_loss: 200  # CP loss at which weight = min_weight
+  
+  # Parameters for combined weighting
+  alpha: 0.7        # Weight on CP loss (vs rank)
+  
+  # Parameters for quality_gate weighting
+  top_n: 3          # Moves in top-N get max_weight
+  cp_threshold: 50  # Or moves with ≤50cp loss get max_weight
+  
+  # Parameters for soft_rank weighting
+  decay: 0.7        # Exponential decay factor
+  
+  # Legacy ELO weighting (optional, can combine with quality)
+  elo_weighting_enabled: false
+
+# Formatting Settings
+formatting:
+  # Include Stockfish evaluations in <think> tags
+  include_eval: true
+  
+  # Evaluation format style
+  # Options: "detailed", "compact", "minimal"
+  eval_style: "detailed"
+  
+  # Number of top moves to show in thinking
+  top_n_moves: 5
+
+# ELO-based sampling weights (for data collection)
+elo_weights:
+  1200: 0.05
+  1400: 0.10
+  1600: 0.15
+  1800: 0.25
+  2000: 0.30
+  2200: 0.20
+  2400: 0.10
+
+# Evaluation metrics
+evaluation:
+  stockfish_path: null  # Auto-detect
+  stockfish_depth: 10
+  stockfish_workers: 8
+
+# Output settings
+output:
+  push_to_hub: false
+  hub_model_id: null

@@ -1,0 +1,197 @@
+# Chess LLM SFT Training Configuration
+# Optimized for modern GPUs with 16-32GB VRAM
+#
+# Key optimizations:
+# - Larger batch sizes leveraging GPU VRAM
+# - BF16 precision for modern architectures
+# - Optimized gradient accumulation
+# - Liger kernels for fused operations
+# - Cut Cross Entropy for memory-efficient loss
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+model:
+  name: "Qwen/Qwen3-0.6B"  # Options: Qwen/Qwen3-0.6B, Qwen/Qwen3-1.7B, etc.
+  max_seq_length: 1024
+  dtype: "bfloat16"  # BF16 is optimal for modern GPU architectures
+  attn_implementation: "flash_attention_2"  # Use Flash Attention 2
+
+# =============================================================================
+# Training Configuration
+# =============================================================================
+training:
+  output_dir: "./outputs/chess-sft"
+  num_train_epochs: 1
+  max_steps: -1
+
+  # Batch size - optimized for 32GB VRAM with gradient checkpointing
+  # For Qwen3-0.6B with seq_len=1024, can fit larger batches
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 4
+  # Effective batch size = 16 * 4 = 64
+
+  # Learning rate - scaled for larger effective batch
+  learning_rate: 8.0e-6
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+
+  # Memory optimizations
+  gradient_checkpointing: true
+
+  # Liger Kernel - fused kernels for faster training
+  use_liger_kernel: true
+
+  # torch.compile - enable for additional speedup (adds compilation time)
+  torch_compile: false  # Set to true for longer training runs
+
+  # Logging
+  logging_steps: 50
+
+  # Checkpointing
+  save_strategy: "steps"
+  save_steps: 1000
+  save_total_limit: 3
+
+  # Evaluation
+  eval_strategy: "steps"
+  eval_steps: 1000
+  eval_size: 1000
+
+  # Chess-specific evaluation (batched generation)
+  chess_eval_steps: 1000        # Run chess eval every N steps
+  chess_eval_batch_size: 32     # Batch size for generation
+  chess_eval_positions: 500     # Number of positions to evaluate
+  chess_eval_max_new_tokens: 128  # Max tokens per eval generation
+
+  # Precision
+  bf16: true
+  fp16: false
+
+  # Optimizer - fused AdamW is fastest on modern GPUs
+  optim: "adamw_torch_fused"
+
+  # Seed
+  seed: 42
+
+  # DataLoader settings
+  # Note: For streaming datasets, workers are limited by num_shards
+  dataloader_num_workers: 0  # 0 = main process only (safest for streaming)
+  dataloader_pin_memory: true
+
+  # Reporting
+  report_to: "wandb"
+  run_name: "chess-sft-optimized"
+
+# =============================================================================
+# Data Configuration
+# =============================================================================
+data:
+  games_dataset: "Lichess/standard-chess-games"
+  puzzles_dataset: "Lichess/chess-puzzles"
+
+  games_ratio: 0.7
+  puzzles_ratio: 0.3
+
+  target_size: 5_000_000
+
+  streaming: true
+
+  preprocessed_path: "./data/chess_sft_preprocessed"
+
+  # Position extraction
+  skip_first_moves: 0
+  skip_last_moves: 0
+  sample_rate: 0.3
+
+  # ELO filtering
+  min_elo: 1200
+  elo_weighting: true
+
+  # Puzzle settings
+  min_puzzle_rating: 1000
+  max_puzzle_rating: 2500
+
+  # Shuffle buffer - larger for better mixing
+  shuffle_buffer_size: 20000
+
+# =============================================================================
+# Loss Weighting Configuration
+# =============================================================================
+loss_weighting:
+  enabled: true
+  method: "elo"
+
+  min_weight: 0.5
+  max_weight: 2.0
+
+  elo_min: 1200
+  elo_max: 2400
+
+  target_elo: 1900
+
+  function: "linear"
+  gaussian_sigma: 400
+
+# =============================================================================
+# ELO Weight Configuration (for sampling)
+# =============================================================================
+elo_weights:
+  1200: 0.05
+  1400: 0.10
+  1600: 0.15
+  1800: 0.25
+  2000: 0.30
+  2200: 0.20
+  2400: 0.10
+
+# =============================================================================
+# Prompt Template
+# =============================================================================
+prompt:
+  template: |
+    You are an expert chess player. Here is the position in FEN format:
+    {fen}
+
+    Legal moves: {legal_moves}
+
+    Board looks like this right now
+    {board}
+
+    Select the best move. Keep your thinking to 2 sentences or less, then output your chosen move.
+
+    CRITICAL: Your UCI move must always be one of the moves from legal_moves_uci. With no spaces in between.
+
+    An example of a valid move for this position is <uci_move>{example_move}</uci_move>.
+    Format:
+    <think>brief thinking (2 sentences max)</think>
+    <uci_move>your_move</uci_move>
+
+  response_template: "<think></think>\n<uci_move>{move}</uci_move>"
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  num_eval_positions: 1000
+  stockfish_path: "/usr/bin/stockfish"
+  stockfish_depth: 10
+  stockfish_time_limit: 0.5
+  stockfish_workers: 8
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+output:
+  push_to_hub: false  # Set to true when ready
+  hub_model_id: "amazingvince/chess-llm"
+  checkpoint_dir: "./checkpoints"
+
+# =============================================================================
+# Cut Cross Entropy Configuration (optional overrides)
+# =============================================================================
+cce:
+  enabled: true
+  impl: "cce"  # "cce" for Triton kernel, "torch_compile" for pure PyTorch

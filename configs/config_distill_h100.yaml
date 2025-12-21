@@ -1,0 +1,250 @@
+# Chess LLM Policy Distillation Configuration
+# ============================================
+# This configuration enables knowledge distillation from Stockfish
+# using forward KL divergence with soft probability targets.
+#
+# Key features:
+# - On-the-fly Stockfish analysis (streaming compatible)
+# - Randomized move order in thinking to prevent shortcuts
+# - Win probability categories (winning, better, slight edge, equal, slight disadvantage, worse, losing)
+# - Forward KL distillation with soft targets
+# - Floor probability for all legal moves (learns rules!)
+
+model:
+  name: "Qwen/Qwen3-0.6B"
+  max_seq_length: 1024
+  attn_implementation: "flash_attention_2"
+  torch_dtype: "bfloat16"
+
+training:
+  output_dir: "./outputs/chess-distill-h100"
+  
+  # Batch settings
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  gradient_accumulation_steps: 2
+  
+  # Training duration
+  num_train_epochs: 1
+  max_steps: -1
+  
+  # Learning rate
+  learning_rate: 2.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1
+  
+  # Optimizer
+  optim: "adamw_torch_fused"
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Logging
+  logging_steps: 50
+  report_to: "wandb"
+  run_name: "chess-policy-distill-h100"
+
+  # Chess eval generation
+  chess_eval_max_new_tokens: 128
+  
+  # Saving
+  save_steps: 500
+  save_total_limit: 3
+  
+  # Evaluation
+  eval_strategy: "steps"
+  eval_steps: 500
+  
+  # Optimizations
+  bf16: true
+  tf32: true
+  gradient_checkpointing: false
+
+# Stockfish Teacher Configuration
+stockfish:
+  # Path (auto-detected if not specified)
+  # path: "/usr/bin/stockfish"
+
+  # Number of parallel workers (adjust based on CPU cores)
+  # For 32-core system: 20-24 workers (leave headroom)
+  num_workers: 24
+
+  # Threads per worker (reduce if Stockfish oversubscribes CPU)
+  threads_per_worker: 1
+
+  # Analysis depth (higher = more accurate, slower)
+  # depth=10 is ~40% faster than depth=12 with minimal quality loss
+  depth: 10
+
+  # Optional time/node limits (override depth when set)
+  time_limit_ms: null
+  nodes: null
+
+  # Number of moves for deep analysis
+  # Top-k moves get full depth analysis
+  top_k: 5
+
+  # Optional shallow pass to score more moves cheaply
+  # Set to 0 to disable
+  shallow_depth: 4
+  shallow_max_moves: 64
+
+  # Hash table size per worker (MB)
+  # Total: num_workers * hash_mb = 16 * 64 = 1GB
+  hash_mb_per_worker: 64
+
+  # Probability conversion: "cp" or "wdl"
+  prob_mode: "cp"
+  wdl_temperature: 1.0
+
+  # LRU cache for repeated positions (0 disables)
+  cache_size: 8192
+
+  # Optional per-source overrides (game/puzzle)
+  source_overrides:
+    game:
+      depth: 10
+      top_k: 5
+    puzzle:
+      depth: 12
+      top_k: 8
+
+# Distillation Configuration
+# =========================
+# Loss structure:
+#   L_total = L_ce + kl_weight * L_kl
+#
+#   L_ce: Cross-entropy on full sequence (thinking + move) - ALWAYS ENABLED
+#         Teaches the model to generate reasoning about best moves
+#
+#   L_kl: KL divergence on <uci_move> token only
+#         Soft distribution from Stockfish CP scores (higher CP = higher prob)
+#         Teaches move quality ranking across ALL legal moves
+#
+distillation:
+  # Enable CE loss on thinking text (recommended: true)
+  # This teaches the model to reason about positions
+  ce_loss_enabled: true
+
+  # Weight for KL distillation loss on move token
+  # 1.0 = equal weight with CE loss
+  # 0.0 = disable KL loss (pure supervised on thinking only)
+  kl_weight: 1.0
+
+  # Temperature for student softmax (applied to model predictions)
+  # Higher = softer student distribution
+  # Usually 1.0 for distillation (teacher is already soft)
+  temperature: 1.0
+
+  # Minimum probability floor for every legal move
+  # Ensures ALL legal moves have non-zero probability
+  # Critical for learning move legality!
+  min_probability: 0.001
+
+  # Add all UCI moves as single-token vocab entries
+  # Improves distillation alignment between move strings and vocab IDs
+  add_uci_move_tokens: true
+
+  # Print tokenizer diagnostics at startup
+  log_tokenizer_stats: false
+
+  # Temperature for converting Stockfish CP to probabilities
+  # Uses softmax: prob(move) = exp(cp / T) / sum(exp(cp_i / T))
+  # Higher = more uniform distribution
+  # Lower = sharper (concentrate on best moves)
+  # Recommended: 75-150
+  stockfish_temperature: 100.0
+
+  # Liger Kernel optimization (up to 80% memory savings)
+  # Requires liger-kernel package to be installed
+  use_liger: true
+
+  # Loss type for soft targets
+  # "kl": Forward KL divergence (default, mean-seeking)
+  # "jsd": Jensen-Shannon Divergence (symmetric, more stable)
+  loss_type: "kl"
+
+# Cut Cross Entropy Configuration
+# Memory-efficient CE loss computation for thinking text
+cce:
+  enabled: true  # Use CCE for CE loss (99.9% memory reduction)
+  # Disable with --no-cce flag or set to false here
+
+# Formatting Configuration
+# Output format example:
+#   <think>
+#   Analyzing position...
+#   - Nf3: slight edge (56% win)
+#   - e4: equal (54% win)
+#   - d4: equal (52% win)
+#
+#   Best line: Nf3 d5 Nc3 Nc6 Bb5
+#   Playing Nf3 gives 56% win chance.
+#   </think>
+#   <uci_move>g1f3</uci_move>
+formatting:
+  # Maximum moves to display in thinking
+  max_display_moves: 5
+
+  # Include the ASCII board in the prompt (higher tokens, may help early training)
+  include_board: true
+
+  # CRITICAL: Randomize move order to prevent shortcuts
+  # Without this, model learns "first move = best"
+  randomize_order: true
+
+  # Include target move in display even if not top-k
+  include_target_if_missing: true
+
+  # Number of moves to show in principal variation (Best line: ...)
+  pv_length: 5
+
+# Data Configuration
+data:
+  # Dataset sources
+  games_dataset: "Lichess/standard-chess-games"
+  puzzles_dataset: "Lichess/chess-puzzles"
+  
+  # Target size
+  target_size: 500000
+  games_ratio: 0.7
+  
+  # Position sampling
+  min_elo: 1200
+  sample_rate: 0.3
+  skip_first_moves: 4
+  skip_last_moves: 2
+  
+  # Puzzle filtering
+  min_puzzle_rating: 1000
+  max_puzzle_rating: 2500
+  
+  # Processing
+  shuffle_buffer_size: 10000
+  eval_split_ratio: 0.02
+  
+  # Streaming mode - on-the-fly Stockfish analysis during training
+  # Set to true and use --streaming flag for on-the-fly analysis
+  # Preprocessed data is faster but requires disk space
+  # Streaming is slower but requires no preprocessing
+  streaming: false  # Use --streaming flag to enable
+
+# ELO-based sampling weights
+elo_weights:
+  1200: 0.05
+  1400: 0.10
+  1600: 0.15
+  1800: 0.25
+  2000: 0.30
+  2200: 0.20
+  2400: 0.10
+
+# Evaluation
+evaluation:
+  stockfish_path: null
+  stockfish_depth: 10
+  stockfish_workers: 8
+
+# Output
+output:
+  push_to_hub: false
+  hub_model_id: null
