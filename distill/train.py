@@ -25,6 +25,7 @@ Usage:
 import os
 import sys
 import argparse
+import json
 import yaml
 import random
 from pathlib import Path
@@ -548,6 +549,27 @@ def load_config(config_path: str) -> Dict[str, Any]:
     """Load YAML configuration file."""
     with open(config_path, 'r') as f:
         return yaml.safe_load(f)
+
+
+def load_global_step_from_checkpoint(checkpoint_path: Path) -> Optional[int]:
+    """
+    Read `global_step` from a Hugging Face Trainer checkpoint directory.
+
+    Returns `None` when `trainer_state.json` is missing or malformed.
+    """
+
+    state_path = checkpoint_path / "trainer_state.json"
+    if not state_path.exists():
+        return None
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+    global_step = state.get("global_step")
+    if isinstance(global_step, int):
+        return global_step
+    return None
 
 
 def setup_model_and_tokenizer(
@@ -1115,6 +1137,11 @@ def main():
         config['training']['per_device_train_batch_size'] = 2
         config['training']['gradient_accumulation_steps'] = 2
 
+    resume_checkpoint = args.resume
+    if resume_checkpoint and not Path(resume_checkpoint).exists():
+        print(f"Warning: Checkpoint {resume_checkpoint} not found")
+        resume_checkpoint = None
+
     # Get config sections
     training_config = config.get('training', {})
     distill_config = config.get('distillation', {})
@@ -1219,6 +1246,24 @@ def main():
         preprocessed_path=preprocessed_path,
         streaming=args.streaming,
     )
+
+    if args.streaming and resume_checkpoint:
+        global_step = load_global_step_from_checkpoint(Path(resume_checkpoint))
+        if global_step is None:
+            print(
+                f"Warning: Could not read global_step from {resume_checkpoint}\\trainer_state.json; "
+                "streaming resume will restart near the beginning of the stream."
+            )
+        else:
+            per_device_batch = int(training_config.get("per_device_train_batch_size", 4))
+            grad_accum = int(training_config.get("gradient_accumulation_steps", 1))
+            skip_examples = global_step * per_device_batch * grad_accum
+            if skip_examples > 0 and hasattr(train_dataset, "skip"):
+                print(
+                    f"Streaming resume: checkpoint global_step={global_step}, "
+                    f"skipping {skip_examples:,} streamed examples to avoid repeating data."
+                )
+                train_dataset = train_dataset.skip(skip_examples)
 
     if hasattr(train_dataset, '__len__'):
         print(f"Train dataset size: {len(train_dataset):,}")
@@ -1377,12 +1422,6 @@ def main():
         chess_eval_callback=chess_eval_callback,
         padding_free=padding_free,
     )
-
-    # Check for resume checkpoint
-    resume_checkpoint = args.resume
-    if resume_checkpoint and not Path(resume_checkpoint).exists():
-        print(f"Warning: Checkpoint {resume_checkpoint} not found")
-        resume_checkpoint = None
 
     # Start training
     print("\n" + "=" * 60)
