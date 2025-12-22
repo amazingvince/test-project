@@ -32,6 +32,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
+# Maximum total tokens (input + generation) during evaluation
+MAX_TOTAL_TOKENS = 1024
+
 from src.utils.chess_utils import (
     render_board_utf, 
     get_legal_moves_uci, 
@@ -117,18 +120,26 @@ def load_model(model_path: str, device: str = "auto", compile_model: bool = True
 def build_prompts_batch(
     boards: List[chess.Board],
     tokenizer,
-    prompt_template: str = DEFAULT_PROMPT_TEMPLATE
+    prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
+    max_input_length: Optional[int] = None,
 ) -> Tuple[List[str], torch.Tensor]:
-    """Build prompts for a batch of positions."""
+    """Build prompts for a batch of positions.
+
+    Args:
+        boards: List of chess boards to build prompts for
+        tokenizer: The tokenizer to use
+        prompt_template: Template for the prompt
+        max_input_length: Maximum input length (truncation).
+    """
     prompts = []
-    
+
     for board in boards:
         fen = board.fen()
         legal_moves = get_legal_moves_uci(board)
         board_utf = render_board_utf(board)
         first_legal = get_first_legal_move(board) or ""
         side_to_move = "White" if board.turn == chess.WHITE else "Black"
-        
+
         user_content = prompt_template.format(
             fen=fen,
             legal_moves=legal_moves,
@@ -136,25 +147,25 @@ def build_prompts_batch(
             example_move=first_legal,
             side_to_move=side_to_move,
         )
-        
+
         messages = [{"role": "user", "content": user_content}]
-        
+
         prompt = tokenizer.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
         prompts.append(prompt)
-    
+
     # Tokenize batch with left padding
     inputs = tokenizer(
         prompts,
         return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=1024
+        max_length=max_input_length,
     )
-    
+
     return prompts, inputs
 
 
@@ -164,15 +175,25 @@ def generate_moves_batch(
     tokenizer,
     boards: List[chess.Board],
     max_new_tokens: int = 64,  # Reduced - we only need the move
-    prompt_template: str = DEFAULT_PROMPT_TEMPLATE
+    prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
+    max_total_tokens: int = MAX_TOTAL_TOKENS,
 ) -> List[Tuple[Optional[str], str]]:
     """
     Generate moves for a batch of positions.
-    
+
+    Args:
+        model: The model to use for generation
+        tokenizer: The tokenizer to use
+        boards: List of chess boards
+        max_new_tokens: Maximum new tokens to generate
+        prompt_template: Template for the prompt
+        max_total_tokens: Maximum total tokens (input + generation)
+
     Returns:
         List of (uci_move or None, full_response_text) tuples
     """
-    _, inputs = build_prompts_batch(boards, tokenizer, prompt_template)
+    max_input_length = max_total_tokens - max_new_tokens
+    _, inputs = build_prompts_batch(boards, tokenizer, prompt_template, max_input_length)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     
     input_length = inputs['input_ids'].shape[1]
@@ -478,6 +499,7 @@ def evaluate_model(
     positions: List[Dict[str, Any]],
     batch_size: int = 16,
     max_new_tokens: int = 64,
+    max_total_tokens: int = MAX_TOTAL_TOKENS,
     stockfish_path: Optional[str] = None,
     stockfish_depth: int = 12,
     stockfish_time_ms: int = 100,
@@ -486,23 +508,40 @@ def evaluate_model(
 ) -> Dict[str, Any]:
     """
     Evaluate model on positions with batched generation.
+
+    Args:
+        model: The model to evaluate
+        tokenizer: The tokenizer
+        positions: List of position dicts with 'fen' and 'target_move'
+        batch_size: Batch size for generation
+        max_new_tokens: Max new tokens to generate
+        max_total_tokens: Max total tokens (input + generation), default 1024
+        stockfish_path: Optional path to Stockfish for ACPL calculation
+        stockfish_depth: Stockfish search depth
+        stockfish_time_ms: Stockfish time per move in ms
+        stockfish_workers: Number of parallel Stockfish workers
+        verbose: Enable verbose output
     """
     results = []
     all_predictions = []
-    
+
+    max_input_length = max_total_tokens - max_new_tokens
+
     # Phase 1: Batched model inference
-    logger.info("Phase 1: generating moves (batch_size=%s)", batch_size)
-    
+    logger.info("Phase 1: generating moves (batch_size=%s, max_total_tokens=%s, max_input=%s, max_new_tokens=%s)",
+                batch_size, max_total_tokens, max_input_length, max_new_tokens)
+
     for i in tqdm(range(0, len(positions), batch_size), desc="Generating"):
         batch_positions = positions[i:i + batch_size]
         boards = [chess.Board(pos['fen']) for pos in batch_positions]
-        
+
         # Generate moves for batch
         batch_results = generate_moves_batch(
             model,
             tokenizer,
             boards,
             max_new_tokens=max_new_tokens,
+            max_total_tokens=max_total_tokens,
         )
         
         for j, (predicted, response) in enumerate(batch_results):
@@ -600,6 +639,8 @@ def main():
                         help='Batch size for generation')
     parser.add_argument('--max_new_tokens', type=int, default=64,
                         help='Max tokens to generate per position')
+    parser.add_argument('--max_total_tokens', type=int, default=1024,
+                        help='Max total tokens (input + generation), default 1024')
     parser.add_argument('--stockfish', type=str, default=None,
                         help='Path to Stockfish binary')
     parser.add_argument('--stockfish_depth', type=int, default=12,
@@ -660,6 +701,7 @@ def main():
         positions=positions,
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
+        max_total_tokens=args.max_total_tokens,
         stockfish_path=args.stockfish,
         stockfish_depth=args.stockfish_depth,
         stockfish_time_ms=args.stockfish_time,

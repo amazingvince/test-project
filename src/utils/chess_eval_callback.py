@@ -28,6 +28,9 @@ from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
+# Maximum total tokens (input + generation) during evaluation
+MAX_TOTAL_TOKENS = 1024
+
 
 @dataclass(frozen=True)
 class EvalPosition:
@@ -201,6 +204,7 @@ class FastChessEvalCallback(TrainerCallback):
         tokenizer: Any,
         eval_batch_size: int = 32,
         max_new_tokens: int = 128,
+        max_total_tokens: int = MAX_TOTAL_TOKENS,
         eval_every_n_steps: int = 500,
         stockfish_path: Optional[str] = None,
         stockfish_workers: int = 8,
@@ -210,6 +214,7 @@ class FastChessEvalCallback(TrainerCallback):
         self.tokenizer = tokenizer
         self.eval_batch_size = int(eval_batch_size)
         self.max_new_tokens = int(max_new_tokens)
+        self.max_total_tokens = int(max_total_tokens)
         self.eval_every_n_steps = int(eval_every_n_steps)
         self.stockfish_path = stockfish_path
         self.stockfish_workers = int(stockfish_workers)
@@ -246,6 +251,12 @@ class FastChessEvalCallback(TrainerCallback):
             results: List[Dict[str, Any]] = []
             positions = self.eval_positions
 
+            max_input_length = self.max_total_tokens - self.max_new_tokens
+            logger.debug(
+                "Chess eval: max_total_tokens=%s, max_input=%s, max_new_tokens=%s",
+                self.max_total_tokens, max_input_length, self.max_new_tokens
+            )
+
             for start in range(0, len(positions), self.eval_batch_size):
                 batch_positions = positions[start : start + self.eval_batch_size]
                 prompts, boards = _build_prompts(self.tokenizer, batch_positions)
@@ -255,7 +266,7 @@ class FastChessEvalCallback(TrainerCallback):
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
-                    max_length=1024,
+                    max_length=max_input_length,
                 )
                 inputs = {k: v.to(model.device) for k, v in inputs.items()}
                 prompt_len = inputs["input_ids"].shape[1]
