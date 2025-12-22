@@ -49,8 +49,8 @@ training:
   report_to: "wandb"
   run_name: "chess-policy-distill-h100"
 
-  # Chess eval generation
-  chess_eval_max_new_tokens: 1024
+  # Chess eval generation (must be < max_total_tokens which defaults to 1024)
+  chess_eval_max_new_tokens: 512
   
   # Saving
   save_steps: 500

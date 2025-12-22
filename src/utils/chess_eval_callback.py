@@ -221,6 +221,17 @@ class FastChessEvalCallback(TrainerCallback):
         self.stockfish_depth = int(stockfish_depth)
         self._original_padding_side = getattr(tokenizer, "padding_side", "right")
 
+        # Validate that there's room for input tokens
+        min_input_tokens = 100  # Reasonable minimum for a chess prompt
+        if self.max_new_tokens >= self.max_total_tokens - min_input_tokens:
+            old_value = self.max_new_tokens
+            self.max_new_tokens = self.max_total_tokens - min_input_tokens
+            logger.warning(
+                "max_new_tokens (%d) too large for max_total_tokens (%d), "
+                "reduced to %d to leave room for input",
+                old_value, self.max_total_tokens, self.max_new_tokens
+            )
+
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step <= 0:
             return
