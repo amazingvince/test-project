@@ -52,6 +52,7 @@ from transformers import (
 from transformers.trainer_pt_utils import AcceleratorConfig
 import chess
 
+
 # ============================================================================
 # Performance optimizations
 # ============================================================================
@@ -1291,6 +1292,8 @@ def main():
         print(f"  Workers ready (test: best={test_analysis.best_move_san})")
 
     # Create trainer
+    print("is torch available: ",torch.cuda.is_available()) 
+    print("torch device count: ",torch.cuda.device_count())
     print("\nCreating distillation trainer...")
     trainer = create_distillation_trainer(
         model=model,

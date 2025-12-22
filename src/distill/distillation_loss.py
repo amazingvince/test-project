@@ -12,11 +12,18 @@ from typing import Dict, Optional, Tuple
 
 # Try to import Liger Kernel for optimized loss computation
 try:
-    from liger_kernel.ops.jsd import LigerJSD
-    from liger_kernel.ops.kl_div import LigerKLDivLoss
+    from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
+    from liger_kernel.transformers.kl_div import LigerKLDIVLoss as LigerKLDivLoss
+    from liger_kernel.transformers.jsd import LigerJSD
     LIGER_AVAILABLE = True
 except ImportError:
-    LIGER_AVAILABLE = False
+    try:
+        # Fallback to older API paths
+        from liger_kernel.ops.jsd import LigerJSD
+        from liger_kernel.ops.kl_div import LigerKLDivLoss
+        LIGER_AVAILABLE = True
+    except ImportError:
+        LIGER_AVAILABLE = False
 
 
 class ChessDistillationLoss(nn.Module):
