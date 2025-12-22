@@ -1,189 +1,174 @@
 """
-Chess utilities for board rendering and move parsing.
+Chess helpers used across SFT, distillation, and evaluation.
+
+This module is intentionally small and stable:
+- Parse movetext (SAN) from common Lichess exports
+- Render a readable ASCII board (for prompts and reports)
+- Validate/extract UCI moves in model outputs
 """
 
+from __future__ import annotations
+
 import re
-import chess
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import List, Optional
 
-
-# Unicode piece symbols for board rendering
-UNICODE_PIECES = {
-    'P': '♙', 'R': '♖', 'N': '♘', 'B': '♗', 'Q': '♕', 'K': '♔',
-    'p': '♟', 'r': '♜', 'n': '♞', 'b': '♝', 'q': '♛', 'k': '♚',
-}
+import chess
 
 
 @dataclass
 class ChessPosition:
-    """Represents a single chess position for training."""
+    """
+    A single chess training position with minimal metadata.
+
+    Fields are kept close to what the training scripts need so datasets can be
+    stored as plain dicts (via `dataclasses.asdict`) without custom serialization.
+    """
+
     fen: str
-    legal_moves_uci: str  # Space-separated list
+    legal_moves_uci: str
     target_move_uci: str
-    first_legal_move: str  # For format example in prompt
+    first_legal_move: str
     board_utf: str
     side_to_move: str
-    # Metadata
     white_elo: int
     black_elo: int
     move_number: int
     source: str  # "game" or "puzzle"
-    # Loss weighting
-    loss_weight: float = 1.0  # Weight for cross-entropy loss
+    loss_weight: float = 1.0
 
 
 def render_board_utf(board: chess.Board) -> str:
     """
-    Render board in UTF-8 format matching competition format.
-    
-    Example output:
-       a  b  c  d  e  f  g  h  
+    Render an ASCII board with coordinates.
+
+    The output is stable across terminals and avoids Unicode piece glyphs, which
+    can render inconsistently depending on font/encoding.
+
+    Example:
+       a  b  c  d  e  f  g  h
        +------------------------+
-    8 | ♜  ♞  ♝  ♛  ♚  ♝  ♞  ♜ | 8
-    7 | ♟  ♟  ♟  ♟  ♟  ♟  ♟  ♟ | 7
+    8 | r  n  b  q  k  b  n  r | 8
+    7 | p  p  p  p  p  p  p  p | 7
     ...
     """
-    lines = []
-    files = 'abcdefgh'
-    
-    # Top coordinates
-    coord_line = "   " + "".join(f" {f} " for f in files) + "  "
-    lines.append(coord_line)
-    lines.append("   +" + "-" * 24 + "+")
-    
-    for rank in range(7, -1, -1):  # 8 down to 1
-        rank_num = str(rank + 1)
-        line_parts = [f"{rank_num} |"]
-        
-        for file in range(8):
-            square = chess.square(file, rank)
+
+    files = "abcdefgh"
+    coord_line = "   " + "".join(f" {file_letter} " for file_letter in files) + "  "
+
+    lines: List[str] = [coord_line, "   +" + "-" * 24 + "+"]
+    for rank in range(7, -1, -1):
+        rank_label = str(rank + 1)
+        row: List[str] = [f"{rank_label} |"]
+        for file_idx in range(8):
+            square = chess.square(file_idx, rank)
             piece = board.piece_at(square)
-            if piece:
-                char = UNICODE_PIECES.get(piece.symbol(), piece.symbol())
-            else:
-                char = "·"
-            line_parts.append(f" {char} ")
-        
-        line_parts.append(f"| {rank_num}")
-        lines.append("".join(line_parts))
-    
-    lines.append("   +" + "-" * 24 + "+")
-    lines.append(coord_line)
-    
+            row.append(f" {(piece.symbol() if piece else '.')} ")
+        row.append(f"| {rank_label}")
+        lines.append("".join(row))
+    lines.extend(["   +" + "-" * 24 + "+", coord_line])
     return "\n".join(lines)
 
 
 def parse_movetext(movetext: str) -> List[str]:
     """
-    Parse Lichess movetext format to list of SAN moves.
-    
-    Movetext format: "1. e4 e5 2. Nf3 Nc6 3. Bb5 ..."
-    Also handles: "1. e4 { [%clk 0:05:00] } e5 { [%clk 0:05:00] } ..."
-    
+    Parse a Lichess movetext string into SAN moves.
+
+    Supports common Lichess PGN-like movetext formats, including clock blocks:
+        "1. e4 { [%clk 0:05:00] } e5 2. Nf3 Nc6 3. Bb5 a6 1-0"
+
     Returns:
-        List of SAN moves: ["e4", "e5", "Nf3", "Nc6", ...]
+        A list of SAN moves in order (e.g. ["e4", "e5", "Nf3", ...]).
     """
+
     if not movetext:
         return []
-    
-    # Remove clock annotations { [%clk ...] }
-    cleaned = re.sub(r'\{[^}]*\}', '', movetext)
-    
-    # Remove move numbers and dots (1. or 1...)
-    cleaned = re.sub(r'\d+\.+\s*', '', cleaned)
-    
-    # Remove game results
-    cleaned = re.sub(r'(1-0|0-1|1/2-1/2|\*)\s*$', '', cleaned)
-    
-    # Remove evaluation annotations
-    cleaned = re.sub(r'\?+|\!+', '', cleaned)
-    
-    # Split and filter
-    moves = cleaned.split()
-    return [m.strip() for m in moves if m.strip()]
+
+    cleaned = re.sub(r"\{[^}]*\}", "", movetext)  # {...} annotations
+    cleaned = re.sub(r"\d+\.+\s*", "", cleaned)  # "1." / "1..." prefixes
+    cleaned = re.sub(r"(1-0|0-1|1/2-1/2|\*)\s*$", "", cleaned)  # results
+    cleaned = re.sub(r"\?+|\!+", "", cleaned)  # simple punctuation nags
+
+    return [token.strip() for token in cleaned.split() if token.strip()]
 
 
 def get_legal_moves_uci(board: chess.Board) -> str:
-    """Get space-separated string of all legal moves in UCI format."""
-    return ' '.join(m.uci() for m in board.legal_moves)
+    """Return all legal moves as a space-separated UCI string."""
+
+    return " ".join(move.uci() for move in board.legal_moves)
 
 
 def get_first_legal_move(board: chess.Board) -> Optional[str]:
-    """Get the first legal move in UCI format (for prompt example)."""
-    try:
-        return next(iter(board.legal_moves)).uci()
-    except StopIteration:
-        return None
+    """Return the first legal move in UCI form, or `None` if none exist."""
+
+    move = next(iter(board.legal_moves), None)
+    return move.uci() if move else None
 
 
 def validate_uci_move(board: chess.Board, uci_move: str) -> bool:
-    """Check if a UCI move string is legal in the current position."""
+    """Return True if `uci_move` is well-formed and legal in `board`."""
+
     try:
         move = chess.Move.from_uci(uci_move)
-        return move in board.legal_moves
-    except (ValueError, chess.InvalidMoveError):
+    except ValueError:
         return False
+    return move in board.legal_moves
+
+
+_UCI_TAG_RE = re.compile(r"<uci_move>([a-h][1-8][a-h][1-8][qrbn]?)</uci_move>")
 
 
 def extract_uci_from_response(response: str) -> Optional[str]:
     """
-    Extract UCI move from model response.
-    
-    Expected format: <uci_move>e2e4</uci_move>
+    Extract a UCI move from an assistant response.
+
+    Expected format:
+        <uci_move>e2e4</uci_move>
     """
-    match = re.search(r'<uci_move>([a-h][1-8][a-h][1-8][qrbn]?)</uci_move>', response)
-    if match:
-        return match.group(1)
-    return None
+
+    match = _UCI_TAG_RE.search(response or "")
+    return match.group(1) if match else None
 
 
 def position_from_board(
     board: chess.Board,
     target_move_uci: str,
+    *,
     white_elo: int = 1500,
     black_elo: int = 1500,
     move_number: int = 0,
-    source: str = "game"
+    source: str = "game",
 ) -> ChessPosition:
-    """Create a ChessPosition from a chess.Board and target move."""
+    """
+    Build a `ChessPosition` from a `chess.Board` and a target move.
+
+    This is a convenience helper for dataset generation. The returned object is
+    fully self-contained (FEN, legal move list, and a rendered board).
+    """
+
     legal_moves = get_legal_moves_uci(board)
-    first_legal = get_first_legal_move(board)
+    first_legal = get_first_legal_move(board) or ""
     board_utf = render_board_utf(board)
-    side = "White" if board.turn else "Black"
-    
+    side_to_move = "White" if board.turn == chess.WHITE else "Black"
+
     return ChessPosition(
         fen=board.fen(),
         legal_moves_uci=legal_moves,
         target_move_uci=target_move_uci,
-        first_legal_move=first_legal or "",
+        first_legal_move=first_legal,
         board_utf=board_utf,
-        side_to_move=side,
+        side_to_move=side_to_move,
         white_elo=white_elo,
         black_elo=black_elo,
         move_number=move_number,
-        source=source
+        source=source,
     )
 
 
 def setup_position_from_fen(fen: str) -> Optional[chess.Board]:
-    """Safely create a board from FEN string."""
+    """Create a `chess.Board` from FEN, returning `None` if it is invalid."""
+
     try:
-        board = chess.Board(fen)
-        return board
+        return chess.Board(fen)
     except ValueError:
         return None
-
-
-if __name__ == "__main__":
-    # Test the utilities
-    board = chess.Board()
-    print("Starting position:")
-    print(render_board_utf(board))
-    print(f"\nLegal moves: {get_legal_moves_uci(board)}")
-    print(f"First legal: {get_first_legal_move(board)}")
-    
-    # Test movetext parsing
-    movetext = "1. e4 { [%clk 0:05:00] } e5 2. Nf3 Nc6 3. Bb5 a6 1-0"
-    moves = parse_movetext(movetext)
-    print(f"\nParsed moves: {moves}")

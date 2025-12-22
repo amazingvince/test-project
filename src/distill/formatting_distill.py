@@ -1,29 +1,20 @@
 """
-Formatting module for Chess Policy Distillation.
+Prompt formatting helpers for policy distillation training.
 
-Generates training examples with Stockfish analysis in thinking tags,
-using randomized move order and categorical labels for better LLM learning.
+This module turns a position and `PositionAnalysis` into chat messages and
+stores the extra fields needed for distillation (e.g. `move_probs`).
 """
 
+from __future__ import annotations
+
 import random
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
+
 import chess
-import sys
-from pathlib import Path
 
-# Handle both relative imports (when used as module) and absolute imports (when run as script)
-try:
-    from .stockfish_teacher import PositionAnalysis, MoveAnalysis
-    from .reasoning_trace import ReasoningTraceGenerator
-except ImportError:
-    # Add parent directory to path when running as script
-    sys.path.insert(0, str(Path(__file__).parent))
-    from stockfish_teacher import PositionAnalysis, MoveAnalysis
-    from reasoning_trace import ReasoningTraceGenerator
-
-# =============================================================================
-# Prompt Templates for Distillation
-# =============================================================================
+from .reasoning_trace import ReasoningTraceGenerator
+from .stockfish_teacher import MoveAnalysis, PositionAnalysis
+from ..utils.chess_utils import get_legal_moves_uci, render_board_utf
 
 DISTILLATION_PROMPT_TEMPLATE = """You are an expert chess player. Analyze this position and select the best move.
 
@@ -58,10 +49,6 @@ DISTILLATION_RESPONSE_TEMPLATE = """<think>
 </think>
 <uci_move>{move}</uci_move>"""
 
-
-# =============================================================================
-# Thinking Text Generation
-# =============================================================================
 
 def categorize_by_win_prob(win_prob: float) -> str:
     """Categorize position based on win probability."""
@@ -373,14 +360,10 @@ def create_distillation_example(
 
     # Generate board UTF if not provided
     if board_utf is None:
-        try:
-            from ..utils.chess_utils import render_board_utf
-        except ImportError:
-            from src.utils.chess_utils import render_board_utf
         board_utf = render_board_utf(board)
 
     # Get legal moves
-    legal_moves_uci = ' '.join(m.uci() for m in board.legal_moves)
+    legal_moves_uci = get_legal_moves_uci(board)
 
     move_for_output = target_move_uci
     if force_best_move and analysis.best_move_uci:
@@ -498,63 +481,11 @@ def format_example_for_display(example: Dict[str, Any]) -> str:
     output.append("-" * 70)
     sorted_probs = sorted(example['move_probs'].items(), key=lambda x: -x[1])
     for move, prob in sorted_probs[:10]:
-        marker = "★" if move == example['best_move_uci'] else ""
-        target = "← target" if move == example['target_move_uci'] else ""
-        output.append(f"  {move}: {prob:.4f} {marker} {target}")
+        best_marker = " (best)" if move == example["best_move_uci"] else ""
+        target_marker = " (target)" if move == example["target_move_uci"] else ""
+        output.append(f"  {move}: {prob:.4f}{best_marker}{target_marker}")
     
     output.append("=" * 70)
     
     return "\n".join(output)
 
-
-if __name__ == "__main__":
-    # Test the formatting
-    print("Testing distillation formatting...")
-    
-    try:
-        from .stockfish_teacher import StockfishTeacher
-        from ..utils.chess_utils import render_board_utf
-    except ImportError:
-        from stockfish_teacher import StockfishTeacher
-        from src.utils.chess_utils import render_board_utf
-    import chess
-    
-    try:
-        with StockfishTeacher(num_workers=1, depth=10, top_k=5) as teacher:
-            # Test with starting position, e4 as target
-            fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
-            target_move = "e7e5"
-            
-            analysis = teacher.analyze_position(fen)
-            
-            example = create_distillation_example(
-                fen=fen,
-                target_move_uci=target_move,
-                analysis=analysis,
-                randomize_order=True,
-            )
-            
-            print(format_example_for_display(example))
-            
-            # Test with a non-best move as target
-            print("\n\n" + "=" * 70)
-            print("TESTING WITH NON-BEST MOVE AS TARGET")
-            print("=" * 70)
-            
-            # Find a suboptimal move
-            for ma in analysis.move_analyses[1:]:  # Skip best
-                if ma.cp_loss > 0:
-                    target_move = ma.uci
-                    break
-            
-            example2 = create_distillation_example(
-                fen=fen,
-                target_move_uci=target_move,
-                analysis=analysis,
-                randomize_order=True,
-            )
-            
-            print(format_example_for_display(example2))
-    
-    except FileNotFoundError as e:
-        print(f"Error: {e}")

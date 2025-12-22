@@ -1,45 +1,47 @@
 #!/usr/bin/env python3
 """
-Preprocess chess data with Stockfish evaluations.
+Preprocess a dataset for SFT training using Stockfish annotations.
 
-This script:
-1. Loads positions from Lichess games and puzzles
-2. Analyzes each position with Stockfish to get all move evaluations
-3. Saves the dataset with move evaluations for training
-
-Usage:
-    python sft/preprocess.py --output ./data/chess_with_eval --size 100000
-    python sft/preprocess.py --config configs/sft/config_with_eval.yaml
+This is a thin CLI wrapper around `src.utils.data_processing_with_eval`, which
+streams positions from HuggingFace datasets, evaluates them with Stockfish, and
+writes a dataset to disk.
 """
 
-import argparse
-import yaml
-from pathlib import Path
-import sys
+from __future__ import annotations
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+import argparse
+import logging
+import shutil
+import sys
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.utils.data_processing_with_eval import preprocess_and_save_with_eval
 from src.utils.stockfish_eval import StockfishEvaluator
 
 
-def find_stockfish():
-    """Find Stockfish binary."""
-    import shutil
-    
-    paths = [
-        shutil.which('stockfish'),
-        '/usr/bin/stockfish',
-        '/usr/games/stockfish',
-        '/usr/local/bin/stockfish',
-        '/opt/homebrew/bin/stockfish',
+logger = logging.getLogger(__name__)
+
+
+def find_stockfish() -> Optional[str]:
+    """Return the first Stockfish executable found on PATH or common locations."""
+
+    candidates = [
+        shutil.which("stockfish"),
+        "/usr/bin/stockfish",
+        "/usr/games/stockfish",
+        "/usr/local/bin/stockfish",
+        "/opt/homebrew/bin/stockfish",
     ]
-    
-    for path in paths:
-        if path and Path(path).exists():
-            return path
-    
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
     return None
 
 
@@ -79,8 +81,14 @@ def main():
         '--seed', type=int, default=42,
         help='Random seed'
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
     
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(levelname)s %(message)s",
+    )
     
     # Load configuration
     config_path = Path(args.config)
@@ -88,7 +96,7 @@ def main():
         with open(config_path) as f:
             config = yaml.safe_load(f)
     else:
-        print(f"Config not found: {config_path}, using defaults")
+        logger.warning("Config not found: %s (using defaults)", config_path)
         config = {}
     
     # Override with command line arguments
@@ -108,37 +116,29 @@ def main():
         stockfish_path = find_stockfish()
     
     if stockfish_path is None:
-        print("ERROR: Stockfish not found!")
-        print("Install with: sudo apt install stockfish")
-        print("Or specify path with --stockfish-path")
-        sys.exit(1)
+        raise SystemExit(
+            "Stockfish not found. Install it (e.g. `apt install stockfish`) or pass --stockfish-path."
+        )
     
-    print("=" * 60)
-    print("Chess Data Preprocessing with Stockfish")
-    print("=" * 60)
-    print(f"Output path: {output_path}")
-    print(f"Target size: {target_size:,}")
-    print(f"Games ratio: {games_ratio:.1%}")
-    print(f"Stockfish path: {stockfish_path}")
-    print(f"Stockfish depth: {depth}")
-    print(f"Stockfish workers: {workers}")
-    print(f"MultiPV: {multipv or 'all moves'}")
-    print("=" * 60)
+    logger.info("Output path: %s", output_path)
+    logger.info("Target size: %s", f"{target_size:,}")
+    logger.info("Games ratio: %.1f%%", games_ratio * 100)
+    logger.info("Stockfish: %s (depth=%s, workers=%s)", stockfish_path, depth, workers)
+    logger.info("MultiPV: %s", multipv or "all moves")
     
     # Verify Stockfish works
-    print("\nVerifying Stockfish...")
+    logger.info("Verifying Stockfish...")
     try:
         with StockfishEvaluator(stockfish_path=stockfish_path, depth=depth) as evaluator:
             import chess
             board = chess.Board()
             analysis = evaluator.analyze_position(board, multipv=5)
-            print(f"✓ Stockfish working! Best move in starting position: {analysis.best_move_san}")
+            logger.info("Stockfish OK (best move in start position: %s)", analysis.best_move_san)
     except Exception as e:
-        print(f"ERROR: Stockfish verification failed: {e}")
-        sys.exit(1)
+        raise SystemExit(f"Stockfish verification failed: {e}") from e
     
     # Process data
-    print("\nStarting preprocessing...")
+    logger.info("Starting preprocessing...")
     dataset = preprocess_and_save_with_eval(
         output_path=output_path,
         target_size=target_size,
@@ -150,30 +150,30 @@ def main():
         config=config,
         seed=args.seed
     )
+
+    logger.info("Dataset saved: %s", output_path)
+    logger.info("Total examples: %s", f"{len(dataset):,}")
     
-    print("\n" + "=" * 60)
-    print("Preprocessing complete!")
-    print("=" * 60)
-    print(f"Dataset saved to: {output_path}")
-    print(f"Total examples: {len(dataset):,}")
-    
-    # Show sample
-    print("\nSample entry:")
-    print("-" * 60)
+    # Show a sample row for a quick sanity check
+    logger.info("Sample entry:")
     sample = dataset[0]
-    print(f"FEN: {sample['fen']}")
-    print(f"Target move: {sample['target_move_uci']}")
-    print(f"Best move: {sample['best_move_san']} ({sample['best_score_cp']:+d}cp)")
-    print(f"Target rank: {sample['target_move_rank']}")
-    print(f"CP loss: {sample['target_move_cp_loss']}")
-    print(f"Loss weight: {sample['loss_weight']:.3f}")
+    logger.info("FEN: %s", sample["fen"])
+    logger.info("Target move: %s", sample["target_move_uci"])
+    logger.info(
+        "Best move: %s (%+dcp)",
+        sample["best_move_san"],
+        sample["best_score_cp"],
+    )
+    logger.info("Target rank: %s", sample["target_move_rank"])
+    logger.info("CP loss: %s", sample["target_move_cp_loss"])
+    logger.info("Loss weight: %.3f", sample["loss_weight"])
     
     if sample['move_evaluations']:
-        print(f"\nTop 5 moves:")
+        logger.info("Top 5 moves:")
         for i, mv in enumerate(sample['move_evaluations'][:5], 1):
             cp = mv['centipawn']
-            print(f"  {i}. {mv['san']}: {cp:+d}cp")
+            logger.info("%d. %s: %+dcp", i, mv["san"], cp)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

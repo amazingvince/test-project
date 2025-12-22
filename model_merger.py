@@ -68,8 +68,8 @@ The REASONING_SCALE controls how much reasoning to add:
     >1.0    Amplified (experimental) - can destabilize the model
 
 Start with 0.5 and adjust based on evaluation:
-- If chess accuracy drops too much  → lower the scale
-- If reasoning/thinking is too weak → raise the scale
+- If chess accuracy drops too much  -> lower the scale
+- If reasoning/thinking is too weak -> raise the scale
 
 QWEN3 THINKING MODE
 -------------------
@@ -145,7 +145,7 @@ def load_state_dict(model_path: str) -> dict:
     del model
     gc.collect()
     torch.cuda.empty_cache()
-    print(f"    ✓ Loaded {len(weights)} parameters")
+    print(f"    [OK] Loaded {len(weights)} parameters")
     return weights
 
 
@@ -200,9 +200,9 @@ def task_arithmetic_merge(
             skipped_keys.append(key)
             merged[key] = chess[key]
     
-    print(f"    ✓ Merged {merged_count}/{len(chess)} parameters")
+    print(f"    [OK] Merged {merged_count}/{len(chess)} parameters")
     if skipped_keys:
-        print(f"    ⚠ Skipped {len(skipped_keys)} params (shape/key mismatch)")
+        print(f"    [WARN] Skipped {len(skipped_keys)} params (shape/key mismatch)")
     
     return merged
 
@@ -271,7 +271,7 @@ def main():
     
     # Done!
     print("\n" + "=" * 70)
-    print("  ✓ Merge complete!")
+    print("  [OK] Merge complete!")
     print("=" * 70)
     print(f"""
   Saved to: {OUTPUT_PATH}

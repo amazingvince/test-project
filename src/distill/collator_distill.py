@@ -1,23 +1,22 @@
 """
-Data Collator for Streaming Chess Distillation.
+Data collators for policy distillation training.
 
-Performs on-the-fly Stockfish analysis during training, creating
-soft targets for knowledge distillation.
+`DistillationCollator` is used in streaming mode (it calls Stockfish at batch
+time). `PrecomputedDistillationCollator` is used with a preprocessed dataset
+saved by `distill/preprocess.py`.
 """
 
-import torch
-from torch.utils.data import DataLoader
-from typing import Dict, Any, List, Optional, Union
-from dataclasses import dataclass
+from __future__ import annotations
+
 import random
-import threading
-from queue import Queue
-import time
 import warnings
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 import chess
+import torch
 
-from .stockfish_teacher import StockfishTeacher, PositionAnalysis
+from .stockfish_teacher import PositionAnalysis, StockfishTeacher
 from .formatting_distill import (
     position_to_messages_distill,
     create_distillation_example,
@@ -26,7 +25,7 @@ from .formatting_distill import (
     DISTILLATION_RESPONSE_TEMPLATE,
 )
 from .reasoning_trace import ReasoningTraceGenerator
-from ..utils.chess_utils import render_board_utf, get_legal_moves_uci
+from ..utils.chess_utils import get_legal_moves_uci, render_board_utf
 
 
 @dataclass
@@ -60,7 +59,6 @@ class DistillationCollator:
         self.rng = random.Random(self.seed)
         self._call_count = 0
         self.uci_move_token_id = self._resolve_token_id("<uci_move>")
-        self.uci_move_end_token_id = self._resolve_token_id("</uci_move>")
         if self.uci_move_token_id is None:
             warnings.warn(
                 "Tokenizer does not contain <uci_move> token; move_positions will be -1."
@@ -313,7 +311,6 @@ class PrecomputedDistillationCollator:
         self.rng = random.Random(self.seed)
         self._call_count = 0
         self.uci_move_token_id = self._resolve_token_id("<uci_move>")
-        self.uci_move_end_token_id = self._resolve_token_id("</uci_move>")
         if self.uci_move_token_id is None:
             warnings.warn(
                 "Tokenizer does not contain <uci_move> token; move_positions will be -1."
@@ -540,123 +537,6 @@ class PrecomputedDistillationCollator:
         }
 
 
-class PrefetchingDistillationCollator:
-    """
-    Collator with prefetching for reduced latency.
-    
-    Prefetches Stockfish analyses for the next batch while
-    the current batch is being processed by the GPU.
-    """
-    
-    def __init__(
-        self,
-        tokenizer: Any,
-        teacher: StockfishTeacher,
-        prefetch_batches: int = 2,
-        **kwargs
-    ):
-        self.base_collator = DistillationCollator(
-            tokenizer=tokenizer,
-            teacher=teacher,
-            **kwargs
-        )
-        self.prefetch_batches = prefetch_batches
-        self._prefetch_queue: Queue = Queue(maxsize=prefetch_batches)
-        self._prefetch_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-    
-    def start_prefetching(self, dataloader: DataLoader):
-        """Start prefetch thread."""
-        def prefetch_worker():
-            for batch in dataloader:
-                if self._stop_event.is_set():
-                    break
-                processed = self.base_collator(batch)
-                self._prefetch_queue.put(processed)
-            self._prefetch_queue.put(None)  # Sentinel
-        
-        self._prefetch_thread = threading.Thread(target=prefetch_worker)
-        self._prefetch_thread.start()
-    
-    def get_batch(self) -> Optional[Dict[str, torch.Tensor]]:
-        """Get next prefetched batch."""
-        return self._prefetch_queue.get()
-    
-    def stop(self):
-        """Stop prefetching."""
-        self._stop_event.set()
-        if self._prefetch_thread:
-            self._prefetch_thread.join()
-
-
-if __name__ == "__main__":
-    # Test the collators
-    print("Testing collators...")
-    
-    from transformers import AutoTokenizer
-    
-    # Mock tokenizer for testing
-    class MockTokenizer:
-        pad_token_id = 0
-        
-        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
-            parts = []
-            for m in messages:
-                parts.append(f"<{m['role']}>{m['content']}</{m['role']}>")
-            if add_generation_prompt:
-                parts.append("<assistant>")
-            return "".join(parts)
-        
-        def __call__(self, text, truncation=True, max_length=2048, return_tensors=None):
-            # Simple character-level tokenization for testing
-            tokens = [ord(c) % 100 for c in text[:max_length]]
-            return {
-                'input_ids': tokens,
-                'attention_mask': [1] * len(tokens),
-            }
-    
-    tokenizer = MockTokenizer()
-    
-    # Test examples
-    examples = [
-        {
-            'fen': 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
-            'target_move_uci': 'e7e5',
-        },
-        {
-            'fen': 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2',
-            'target_move_uci': 'g1f3',
-        },
-    ]
-    
-    try:
-        from .stockfish_teacher import StockfishTeacher
-        
-        with StockfishTeacher(num_workers=2, depth=8, top_k=5) as teacher:
-            collator = DistillationCollator(
-                tokenizer=tokenizer,
-                teacher=teacher,
-                max_length=512,
-                randomize_order=True,
-            )
-            
-            print("\nProcessing batch...")
-            start = time.time()
-            batch = collator(examples)
-            elapsed = time.time() - start
-            
-            print(f"Batch processed in {elapsed:.2f}s")
-            print(f"Input shape: {batch['input_ids'].shape}")
-            print(f"Has soft_targets: {'soft_targets' in batch}")
-            
-            if 'soft_targets' in batch:
-                for i, st in enumerate(batch['soft_targets']):
-                    if st:
-                        print(f"  Example {i}: {len(st)} moves in distribution")
-            
-    except FileNotFoundError as e:
-        print(f"Stockfish not found: {e}")
-        print("Testing precomputed collator instead...")
         
         # Test precomputed collator
         precomputed_examples = [

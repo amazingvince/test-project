@@ -124,7 +124,7 @@ loss_weighting:
   
   # Parameters for quality_gate weighting
   top_n: 3          # Moves in top-N get max_weight
-  cp_threshold: 50  # Or moves with ≤50cp loss get max_weight
+  cp_threshold: 50  # Or moves with <=50cp loss get max_weight
   
   # Parameters for soft_rank weighting
   decay: 0.7        # Exponential decay factor

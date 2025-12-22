@@ -76,9 +76,9 @@ LIGER_AVAILABLE = False
 try:
     from liger_kernel.transformers import apply_liger_kernel_to_qwen3
     LIGER_AVAILABLE = True
-    print("✓ Liger Kernel available")
+    print("Liger Kernel available")
 except ImportError:
-    print("⚠ Liger Kernel not installed. Install with: pip install liger-kernel")
+    print("Liger Kernel not installed. Install with: pip install liger-kernel")
 
 
 def apply_liger_kernels_no_ce(model_name: str):
@@ -96,7 +96,7 @@ def apply_liger_kernels_no_ce(model_name: str):
             cross_entropy=False,
             fused_linear_cross_entropy=False,
         )
-        print("✓ Applied Liger kernels to Qwen3 (RoPE, RMSNorm, SwiGLU)")
+        print("Applied Liger kernels to Qwen3 (RoPE, RMSNorm, SwiGLU)")
 
     elif 'qwen2' in model_name_lower:
         try:
@@ -105,9 +105,9 @@ def apply_liger_kernels_no_ce(model_name: str):
                 rope=True, rms_norm=True, swiglu=True,
                 cross_entropy=False, fused_linear_cross_entropy=False,
             )
-            print("✓ Applied Liger kernels to Qwen2 (RoPE, RMSNorm, SwiGLU)")
+            print("Applied Liger kernels to Qwen2 (RoPE, RMSNorm, SwiGLU)")
         except ImportError:
-            print("⚠ Qwen2 Liger kernels not available")
+            print("Qwen2 Liger kernels not available")
 
     elif 'llama' in model_name_lower:
         try:
@@ -116,9 +116,9 @@ def apply_liger_kernels_no_ce(model_name: str):
                 rope=True, rms_norm=True, swiglu=True,
                 cross_entropy=False, fused_linear_cross_entropy=False,
             )
-            print("✓ Applied Liger kernels to Llama (RoPE, RMSNorm, SwiGLU)")
+            print("Applied Liger kernels to Llama (RoPE, RMSNorm, SwiGLU)")
         except ImportError:
-            print("⚠ Llama Liger kernels not available")
+            print("Llama Liger kernels not available")
 
     elif 'mistral' in model_name_lower:
         try:
@@ -127,11 +127,11 @@ def apply_liger_kernels_no_ce(model_name: str):
                 rope=True, rms_norm=True, swiglu=True,
                 cross_entropy=False, fused_linear_cross_entropy=False,
             )
-            print("✓ Applied Liger kernels to Mistral (RoPE, RMSNorm, SwiGLU)")
+            print("Applied Liger kernels to Mistral (RoPE, RMSNorm, SwiGLU)")
         except ImportError:
-            print("⚠ Mistral Liger kernels not available")
+            print("Mistral Liger kernels not available")
     else:
-        print(f"⚠ No Liger kernel support for model: {model_name}")
+        print(f"No Liger kernel support for model: {model_name}")
 
 
 # ============================================================================
@@ -142,9 +142,9 @@ CCE_AVAILABLE = False
 try:
     from cut_cross_entropy import linear_cross_entropy
     CCE_AVAILABLE = True
-    print("✓ Cut Cross Entropy available")
+    print("Cut Cross Entropy available")
 except ImportError:
-    print("⚠ Cut Cross Entropy not installed. Install with:")
+    print("Cut Cross Entropy not installed. Install with:")
     print('  pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"')
 
 
@@ -456,7 +456,7 @@ class DistillationTrainer(Trainer):
         else:
             # Fallback to standard CE if we can't find lm_head
             if not self._cce_warned:
-                print("⚠ CCE: Could not find lm_head, falling back to standard CE")
+                print("CCE: Could not find lm_head, falling back to standard CE")
                 self._cce_warned = True
             logits = outputs.logits
             shift_logits = logits[..., :-1, :].contiguous()
@@ -515,7 +515,7 @@ class DistillationTrainer(Trainer):
         except Exception as e:
             # Fallback to standard CE if CCE fails
             if not self._cce_warned:
-                print(f"⚠ CCE computation failed: {e}, using standard CE")
+                print(f"CCE computation failed: {e}, using standard CE")
                 self._cce_warned = True
 
             logits = outputs.logits
@@ -578,7 +578,7 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-        print("✓ Gradient checkpointing enabled (non-reentrant)")
+        print("Gradient checkpointing enabled (non-reentrant)")
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -770,7 +770,7 @@ def load_streaming_dataset(config: Dict[str, Any]):
         seed=training_config.get('seed', 42),
     )
 
-    print(f"✓ Streaming train dataset ready")
+    print("Streaming train dataset ready")
     print(f"  Games ratio: {data_config.get('games_ratio', 0.7)}")
     print(f"  Shuffle buffer: {data_config.get('shuffle_buffer_size', 10000)}")
 
@@ -827,7 +827,7 @@ def load_streaming_dataset(config: Dict[str, Any]):
             eval_datasets['puzzles'] = Dataset.from_list(eval_puzzles_examples)
 
         eval_dataset = eval_datasets
-        print(f"✓ Eval dataset: {len(eval_examples)} examples (fixed, in memory)")
+        print(f"Eval dataset: {len(eval_examples)} examples (fixed, in memory)")
         print(f"  Games: {eval_games}, Puzzles: {eval_puzzles}")
 
     print("=" * 60)
@@ -960,7 +960,7 @@ def create_distillation_trainer(
 
     # Data collator - use streaming collator with teacher, or precomputed
     if streaming and teacher is not None:
-        print("✓ Using streaming collator with on-the-fly Stockfish analysis")
+        print("Using streaming collator with on-the-fly Stockfish analysis")
         print(f"  Note: Each batch requires ~{training_config.get('per_device_train_batch_size', 4) * 80}ms for Stockfish analysis")
         data_collator = DistillationCollator(
             tokenizer=tokenizer,
@@ -994,7 +994,7 @@ def create_distillation_trainer(
     callbacks = []
     if chess_eval_callback is not None:
         callbacks.append(chess_eval_callback)
-        print("✓ Chess evaluation callback enabled")
+        print("Chess evaluation callback enabled")
 
     trainer = DistillationTrainer(
         model=model,
@@ -1077,17 +1077,17 @@ def main():
     print("DISTILLATION TRAINING CONFIGURATION")
     print("=" * 60)
     print(f"Loss structure: L_total = L_ce + {kl_weight} * L_kl")
-    print(f"  ├─ L_ce (thinking): {'ENABLED' if ce_loss_enabled else 'DISABLED'}")
-    print(f"  │   └─ Cut Cross Entropy: {'ENABLED' if use_cce else 'DISABLED'}")
-    print(f"  └─ L_kl (move dist): {loss_type.upper()} divergence, weight={kl_weight}")
-    print(f"✓ Liger Kernel: {'enabled' if use_liger and LIGER_LOSS_AVAILABLE else 'disabled'}")
-    print(f"✓ Temperature: {distill_config.get('temperature', 1.0)}")
+    print(f"CE loss (thinking): {'ENABLED' if ce_loss_enabled else 'DISABLED'}")
+    print(f"Cut Cross Entropy: {'ENABLED' if use_cce else 'DISABLED'}")
+    print(f"KL loss (move dist): {loss_type.upper()} divergence, weight={kl_weight}")
+    print(f"Liger Kernel: {'enabled' if use_liger and LIGER_LOSS_AVAILABLE else 'disabled'}")
+    print(f"Temperature: {distill_config.get('temperature', 1.0)}")
     if prob_mode == 'wdl':
-        print(f"✓ Stockfish WDL temperature: {stockfish_config.get('wdl_temperature', 1.0)}")
+        print(f"Stockfish WDL temperature: {stockfish_config.get('wdl_temperature', 1.0)}")
     else:
-        print(f"✓ Stockfish temp (CP->prob): {distill_config.get('stockfish_temperature', 100.0)}")
-    print(f"✓ Floor probability: {distill_config.get('min_probability', 0.001)}")
-    print(f"✓ Flash Attention: {config.get('model', {}).get('attn_implementation', 'flash_attention_2')}")
+        print(f"Stockfish temp (CP->prob): {distill_config.get('stockfish_temperature', 100.0)}")
+    print(f"Floor probability: {distill_config.get('min_probability', 0.001)}")
+    print(f"Flash Attention: {config.get('model', {}).get('attn_implementation', 'flash_attention_2')}")
     print("=" * 60)
 
     # Store in config for trainer to use
@@ -1135,7 +1135,7 @@ def main():
         use_liger=use_liger,
         loss_type=loss_type,
     )
-    print(f"✓ Distillation loss initialized (use_liger={distill_loss_fn.use_liger}, type={loss_type})")
+    print(f"Distillation loss initialized (use_liger={distill_loss_fn.use_liger}, type={loss_type})")
 
     # Load dataset
     print("\nLoading dataset...")
@@ -1157,70 +1157,47 @@ def main():
 
     # Setup chess evaluation callback (optional)
     chess_eval_callback = None
-    # Import from sft/train.py if needed
-    try:
-        from train_sft import FastChessEvalCallback, prepare_eval_positions_for_callback
+    if eval_dataset is not None and not args.debug:
+        from src.utils.chess_eval_callback import FastChessEvalCallback, prepare_eval_positions
 
-        if eval_dataset is not None and not args.debug:
-            eval_config = config.get('evaluation', {})
-            training_config = config.get('training', {})
+        eval_config = config.get("evaluation", {})
+        training_config = config.get("training", {})
 
-            # Find Stockfish (same paths as streaming mode)
-            stockfish_path = None
-            possible_paths = [
-                eval_config.get('stockfish_path'),
-                shutil.which('stockfish'),
-                '/usr/bin/stockfish',
-                '/usr/games/stockfish',
-                '/usr/local/bin/stockfish',
-                '/opt/homebrew/bin/stockfish',
-            ]
-            for path in possible_paths:
-                if path and Path(path).exists():
-                    stockfish_path = path
-                    break
+        stockfish_path = None
+        possible_paths = [
+            eval_config.get("stockfish_path"),
+            shutil.which("stockfish"),
+            "/usr/bin/stockfish",
+            "/usr/games/stockfish",
+            "/usr/local/bin/stockfish",
+            "/opt/homebrew/bin/stockfish",
+        ]
+        for path in possible_paths:
+            if path and Path(path).exists():
+                stockfish_path = path
+                break
 
-            def _collect_eval_positions(eval_ds, max_positions: int):
-                if isinstance(eval_ds, dict):
-                    datasets = list(eval_ds.values())
-                    if not datasets:
-                        return []
-                    per = max_positions // len(datasets)
-                    remainder = max_positions % len(datasets)
-                    positions = []
-                    for i, ds in enumerate(datasets):
-                        take = per + (1 if i < remainder else 0)
-                        if take <= 0:
-                            continue
-                        positions.extend(
-                            prepare_eval_positions_for_callback(ds, max_positions=take)
-                        )
-                    return positions
-                return prepare_eval_positions_for_callback(eval_ds, max_positions=max_positions)
+        eval_positions = prepare_eval_positions(
+            eval_dataset,
+            max_positions=training_config.get("chess_eval_positions", 500),
+        )
 
-            eval_positions = _collect_eval_positions(
-                eval_dataset,
-                max_positions=training_config.get('chess_eval_positions', 500)
+        if eval_positions:
+            chess_eval_callback = FastChessEvalCallback(
+                eval_positions=eval_positions,
+                tokenizer=tokenizer,
+                eval_batch_size=training_config.get("chess_eval_batch_size", 32),
+                max_new_tokens=training_config.get("chess_eval_max_new_tokens", 128),
+                eval_every_n_steps=training_config.get("chess_eval_steps", 500),
+                stockfish_path=stockfish_path,
+                stockfish_workers=eval_config.get("stockfish_workers", 8),
+                stockfish_depth=eval_config.get("stockfish_depth", 10),
             )
-
-            if eval_positions:
-                chess_eval_callback = FastChessEvalCallback(
-                    eval_positions=eval_positions,
-                    tokenizer=tokenizer,
-                    eval_batch_size=32,
-                    max_new_tokens=training_config.get('chess_eval_max_new_tokens', 128),
-                    eval_every_n_steps=training_config.get('chess_eval_steps', 500),
-                    stockfish_path=stockfish_path,
-                    stockfish_workers=eval_config.get('stockfish_workers', 8),
-                    stockfish_depth=eval_config.get('stockfish_depth', 10),
-                )
-                print(f"✓ Chess eval callback: {len(eval_positions)} positions")
-                if stockfish_path:
-                    print(f"  Stockfish: {stockfish_path} (ACPL enabled)")
-                else:
-                    print("  Stockfish: not found (ACPL disabled)")
-    except ImportError:
-        print("⚠ Could not import chess eval callback from train.py")
+            print(f"Chess eval callback: {len(eval_positions)} positions")
+            if stockfish_path:
+                print(f"  Stockfish: {stockfish_path} (ACPL enabled)")
+            else:
+                print("  Stockfish: not found (ACPL disabled)")
 
     # Initialize StockfishTeacher for streaming mode
     teacher = None
@@ -1289,12 +1266,12 @@ def main():
             wdl_temperature=stockfish_config.get('wdl_temperature', 1.0),
             cache_size=stockfish_config.get('cache_size', 0),
         )
-        print("✓ StockfishTeacher created")
+        print("StockfishTeacher created")
 
         # Pre-initialize workers and test with a simple position
         print("  Initializing Stockfish workers...")
         test_analysis = teacher.analyze_position(chess.STARTING_FEN)
-        print(f"  ✓ Workers ready (test: best={test_analysis.best_move_san})")
+        print(f"  Workers ready (test: best={test_analysis.best_move_san})")
 
     # Create trainer
     print("\nCreating distillation trainer...")
@@ -1335,7 +1312,7 @@ def main():
     if teacher is not None:
         print("\nShutting down StockfishTeacher...")
         teacher.close()
-        print("✓ StockfishTeacher closed")
+        print("StockfishTeacher closed")
 
     # Save model
     output_dir = config.get('training', {}).get('output_dir', './outputs/chess-distill')

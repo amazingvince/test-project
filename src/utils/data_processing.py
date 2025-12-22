@@ -10,6 +10,7 @@ Includes ELO-based loss weighting.
 """
 
 import math
+import logging
 import random
 import chess
 from typing import Iterator, Dict, Any, Optional, List
@@ -24,6 +25,8 @@ from .chess_utils import (
     get_first_legal_move,
     position_from_board
 )
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -523,11 +526,11 @@ def preprocess_and_save(
     games_target = int(target_size * games_ratio)
     puzzles_target = target_size - games_target
     
-    print(f"Target: {games_target:,} game positions, {puzzles_target:,} puzzles")
+    logger.info("Target: %s game positions, %s puzzles", f"{games_target:,}", f"{puzzles_target:,}")
     
     examples = []
     
-    print("Processing games...")
+    logger.info("Processing games...")
     data_config = config.get('data', {})
     elo_weights = config.get('elo_weights', None)
     
@@ -551,9 +554,9 @@ def preprocess_and_save(
         if game_count >= games_target:
             break
     
-    print(f"Collected {game_count:,} game positions")
+    logger.info("Collected %s game positions", f"{game_count:,}")
     
-    print("Processing puzzles...")
+    logger.info("Processing puzzles...")
     puzzle_count = 0
     for pos in tqdm(
         stream_puzzle_positions(
@@ -571,42 +574,27 @@ def preprocess_and_save(
         if puzzle_count >= puzzles_target:
             break
     
-    print(f"Collected {puzzle_count:,} puzzle positions")
+    logger.info("Collected %s puzzle positions", f"{puzzle_count:,}")
     
-    print("Shuffling...")
+    logger.info("Shuffling...")
     rng = random.Random(seed)
     rng.shuffle(examples)
     
-    print("Creating dataset...")
+    logger.info("Creating dataset...")
     dataset = Dataset.from_list(examples)
     
-    print(f"Saving to {output_path}...")
+    logger.info("Saving to %s...", output_path)
     dataset.save_to_disk(output_path)
-    print(f"Saved {len(examples):,} examples")
+    logger.info("Saved %s examples", f"{len(examples):,}")
     
     # Print loss weight statistics
     weights = [e['loss_weight'] for e in examples if 'loss_weight' in e]
     if weights:
-        print(f"\nLoss weight stats:")
-        print(f"  Min: {min(weights):.3f}")
-        print(f"  Max: {max(weights):.3f}")
-        print(f"  Mean: {sum(weights)/len(weights):.3f}")
+        logger.info(
+            "Loss weight stats: min=%.3f max=%.3f mean=%.3f",
+            min(weights),
+            max(weights),
+            sum(weights) / len(weights),
+        )
     
     return dataset
-
-
-if __name__ == "__main__":
-    # Test loss weight functions
-    print("Testing loss weight functions...")
-    
-    test_elos = [1200, 1400, 1600, 1800, 1900, 2000, 2200, 2400]
-    
-    print("\nLinear weighting:")
-    for elo in test_elos:
-        w = compute_loss_weight_linear(elo)
-        print(f"  ELO {elo}: weight = {w:.3f}")
-    
-    print("\nGaussian weighting (target=1900, sigma=400):")
-    for elo in test_elos:
-        w = compute_loss_weight_gaussian(elo, target_elo=1900, sigma=400)
-        print(f"  ELO {elo}: weight = {w:.3f}")

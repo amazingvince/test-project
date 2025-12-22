@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """
-Preprocess chess data with Stockfish analysis for policy distillation.
+Preprocess a policy-distillation dataset with Stockfish analysis.
 
-This script:
-1. Loads positions from Lichess games and puzzles
-2. Analyzes each position with Stockfish (parallelized)
-3. Generates probability distributions over all legal moves
-4. Saves the dataset ready for distillation training
-
-Usage:
-    python distill/preprocess.py --output ./data/chess_distill --size 100000
-    python distill/preprocess.py --config configs/distill/config_distill.yaml
+The resulting dataset is written to disk and can be loaded by `distill/train.py`.
 """
 
+from __future__ import annotations
+
 import argparse
-import yaml
-from pathlib import Path
+import logging
+import shutil
 import sys
 import random
 import time
-from typing import Dict, Any, Optional, Iterator
-from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, Iterator, Optional
+
+import yaml
 
 # Ensure repo root is on sys.path when running from subfolders
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,17 +37,17 @@ from src.utils.chess_utils import (
 from src.distill.formatting_distill import create_distillation_example
 from src.distill.reasoning_trace import ReasoningTraceGenerator
 
+logger = logging.getLogger(__name__)
 
 def find_stockfish() -> Optional[str]:
-    """Find Stockfish binary."""
-    import shutil
-    
+    """Return the first Stockfish executable found on PATH or common locations."""
+
     paths = [
-        shutil.which('stockfish'),
-        '/usr/bin/stockfish',
-        '/usr/games/stockfish',
-        '/usr/local/bin/stockfish',
-        '/opt/homebrew/bin/stockfish',
+        shutil.which("stockfish"),
+        "/usr/bin/stockfish",
+        "/usr/games/stockfish",
+        "/usr/local/bin/stockfish",
+        "/opt/homebrew/bin/stockfish",
     ]
     
     for path in paths:
@@ -150,7 +146,7 @@ def extract_positions_from_games(
             if move_idx < skip_first:
                 try:
                     board.push_san(move_san)
-                except:
+                except ValueError:
                     break
                 continue
             
@@ -160,14 +156,14 @@ def extract_positions_from_games(
             if rng.random() > sample_rate:
                 try:
                     board.push_san(move_san)
-                except:
+                except ValueError:
                     break
                 continue
             
             try:
                 target_move = board.parse_san(move_san)
                 target_uci = target_move.uci()
-            except:
+            except ValueError:
                 break
             
             yield {
@@ -185,7 +181,7 @@ def extract_positions_from_games(
             
             try:
                 board.push_san(move_san)
-            except:
+            except ValueError:
                 break
 
 
@@ -242,40 +238,42 @@ def extract_positions_from_puzzles(
 
         try:
             board = chess.Board(fen)
-
-            # Iterate through all moves in the puzzle
-            for i, move_uci in enumerate(moves):
-                if position_count >= max_positions:
-                    break
-
-                try:
-                    move = chess.Move.from_uci(move_uci)
-                except ValueError:
-                    break  # Invalid move format, stop
-
-                if move not in board.legal_moves:
-                    break  # Illegal move, stop
-
-                # Odd indices (1, 3, 5...) are solver's moves - extract these
-                if i % 2 == 1:
-                    yield {
-                        'fen': board.fen(),
-                        'target_move_uci': move_uci,
-                        'board_utf': render_board_utf(board),
-                        'legal_moves_uci': get_legal_moves_uci(board),
-                        'white_elo': rating,
-                        'black_elo': rating,
-                        'move_number': i,
-                        'source': 'puzzle',
-                    }
-
-                    position_count += 1
-
-                # Apply move to advance board state
-                board.push(move)
-
-        except:
+        except ValueError:
             continue
+
+        # Iterate through all moves in the puzzle
+        for i, move_uci in enumerate(moves):
+            if position_count >= max_positions:
+                break
+
+            try:
+                move = chess.Move.from_uci(move_uci)
+            except ValueError:
+                break  # Invalid move format
+
+            if move not in board.legal_moves:
+                break  # Illegal move
+
+            # Odd indices (1, 3, 5...) are solver's moves - extract these
+            if i % 2 == 1:
+                yield {
+                    'fen': board.fen(),
+                    'target_move_uci': move_uci,
+                    'board_utf': render_board_utf(board),
+                    'legal_moves_uci': get_legal_moves_uci(board),
+                    'white_elo': rating,
+                    'black_elo': rating,
+                    'move_number': i,
+                    'source': 'puzzle',
+                }
+
+                position_count += 1
+
+            # Apply move to advance board state
+            try:
+                board.push(move)
+            except (ValueError, chess.IllegalMoveError):
+                break
 
 
 def analyze_and_format_batch(
@@ -351,7 +349,7 @@ def analyze_and_format_batch(
             results.append(example)
             
         except Exception as e:
-            print(f"Warning: Failed to process position: {e}")
+            logger.warning("Failed to process position: %s", e)
             continue
     
     return results
@@ -433,8 +431,14 @@ def main():
         '--seed', type=int, default=42,
         help='Random seed'
     )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging.")
     
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(levelname)s %(message)s",
+    )
     
     # Load configuration
     config_path = Path(args.config)
@@ -442,7 +446,7 @@ def main():
         with open(config_path) as f:
             config = yaml.safe_load(f)
     else:
-        print(f"Config not found: {config_path}, using defaults")
+        logger.warning("Config not found: %s (using defaults)", config_path)
         config = {}
     
     # Override with command line arguments
@@ -457,11 +461,11 @@ def main():
     if trace_enabled:
         reasoning_trace_generator = ReasoningTraceGenerator(reasoning_trace_config)
         trace_status = reasoning_trace_generator.status()
-        print(
-            "Reasoning trace enabled: "
-            f"opening={trace_status.get('opening_available')}, "
-            f"tablebase={trace_status.get('tablebase_available')}, "
-            f"force_best={force_best_move}"
+        logger.info(
+            "Reasoning trace enabled (opening=%s, tablebase=%s, force_best=%s)",
+            trace_status.get("opening_available"),
+            trace_status.get("tablebase_available"),
+            force_best_move,
         )
     
     output_path = args.output or './data/chess_distill'
@@ -509,51 +513,46 @@ def main():
         stockfish_path = find_stockfish()
     
     if stockfish_path is None:
-        print("ERROR: Stockfish not found!")
-        print("Install with: sudo apt install stockfish")
-        print("Or specify path with --stockfish-path")
-        sys.exit(1)
+        raise SystemExit(
+            "Stockfish not found. Install it (e.g. `apt install stockfish`) or pass --stockfish-path."
+        )
     
     # Calculate targets
     games_target = int(target_size * games_ratio)
     puzzles_target = target_size - games_target
     
-    print("=" * 70)
-    print("Chess Policy Distillation - Data Preprocessing")
-    print("=" * 70)
-    print(f"Output path: {output_path}")
-    print(f"Target size: {target_size:,}")
-    print(f"  Games: {games_target:,} ({games_ratio:.0%})")
-    print(f"  Puzzles: {puzzles_target:,} ({1-games_ratio:.0%})")
-    print(f"Stockfish: {stockfish_path}")
-    print(f"  Depth: {depth}")
+    logger.info("Output path: %s", output_path)
+    logger.info("Target size: %s", f"{target_size:,}")
+    logger.info("  Games: %s (%.0f%%)", f"{games_target:,}", games_ratio * 100)
+    logger.info("  Puzzles: %s (%.0f%%)", f"{puzzles_target:,}", (1 - games_ratio) * 100)
+    logger.info("Stockfish: %s", stockfish_path)
+    logger.info("  Depth: %s", depth)
     if time_limit_ms is not None:
-        print(f"  Time limit: {time_limit_ms}ms")
+        logger.info("  Time limit: %sms", time_limit_ms)
     if nodes is not None:
-        print(f"  Nodes: {nodes}")
-    print(f"  Top-k: {top_k}")
-    print(f"  Workers: {workers}")
-    print(f"  Threads/worker: {threads_per_worker}")
+        logger.info("  Nodes: %s", nodes)
+    logger.info("  Top-k: %s", top_k)
+    logger.info("  Workers: %s", workers)
+    logger.info("  Threads/worker: %s", threads_per_worker)
     if shallow_depth:
-        print(f"  Shallow depth: {shallow_depth}")
+        logger.info("  Shallow depth: %s", shallow_depth)
         if shallow_max_moves is not None:
-            print(f"  Shallow max moves: {shallow_max_moves}")
+            logger.info("  Shallow max moves: %s", shallow_max_moves)
     if confirm_depth:
-        print(f"  Confirm depth: {confirm_depth}")
-        print(f"  Confirm top-k: {confirm_top_k}")
-    print(f"  Prob mode: {prob_mode}")
+        logger.info("  Confirm depth: %s", confirm_depth)
+        logger.info("  Confirm top-k: %s", confirm_top_k)
+    logger.info("  Prob mode: %s", prob_mode)
     if prob_mode == "wdl":
-        print(f"  WDL temperature: {wdl_temperature}")
+        logger.info("  WDL temperature: %s", wdl_temperature)
     if cache_size:
-        print(f"  Cache size: {cache_size}")
-    print(f"Batch size: {batch_size}")
-    print("=" * 70)
+        logger.info("  Cache size: %s", cache_size)
+    logger.info("Batch size: %s", batch_size)
     
     # Initialize
     rng = random.Random(args.seed)
     
     # Verify Stockfish
-    print("\nVerifying Stockfish...")
+    logger.info("Verifying Stockfish...")
     try:
         with StockfishTeacher(
             stockfish_path=stockfish_path,
@@ -574,10 +573,9 @@ def main():
             cache_size=cache_size,
         ) as test_teacher:
             analysis = test_teacher.analyze_position(chess.STARTING_FEN)
-            print(f"✓ Stockfish working! Best opening move: {analysis.best_move_san}")
+            logger.info("Stockfish OK (best move in start position: %s)", analysis.best_move_san)
     except Exception as e:
-        print(f"ERROR: Stockfish verification failed: {e}")
-        sys.exit(1)
+        raise SystemExit(f"Stockfish verification failed: {e}") from e
     
     # Create teacher with full worker pool
     teacher = StockfishTeacher(
@@ -603,9 +601,7 @@ def main():
     
     try:
         # Process games
-        print(f"\n{'='*70}")
-        print("Step 1: Processing game positions")
-        print(f"{'='*70}")
+        logger.info("Step 1: processing game positions")
         
         game_positions = list(tqdm(
             extract_positions_from_games(config, games_target, args.seed),
@@ -613,8 +609,8 @@ def main():
             desc="Extracting games"
         ))
         
-        print(f"Extracted {len(game_positions):,} game positions")
-        print("Analyzing with Stockfish...")
+        logger.info("Extracted %s game positions", f"{len(game_positions):,}")
+        logger.info("Analyzing with Stockfish...")
         
         for i in tqdm(range(0, len(game_positions), batch_size), desc="Analyzing"):
             batch = game_positions[i:i+batch_size]
@@ -629,12 +625,10 @@ def main():
             )
             all_examples.extend(examples)
         
-        print(f"Processed {len(all_examples):,} game examples")
+        logger.info("Processed %s game examples", f"{len(all_examples):,}")
         
         # Process puzzles
-        print(f"\n{'='*70}")
-        print("Step 2: Processing puzzle positions")
-        print(f"{'='*70}")
+        logger.info("Step 2: processing puzzle positions")
         
         puzzle_positions = list(tqdm(
             extract_positions_from_puzzles(config, puzzles_target, args.seed),
@@ -642,8 +636,8 @@ def main():
             desc="Extracting puzzles"
         ))
         
-        print(f"Extracted {len(puzzle_positions):,} puzzle positions")
-        print("Analyzing with Stockfish...")
+        logger.info("Extracted %s puzzle positions", f"{len(puzzle_positions):,}")
+        logger.info("Analyzing with Stockfish...")
         
         game_count = len(all_examples)
         for i in tqdm(range(0, len(puzzle_positions), batch_size), desc="Analyzing"):
@@ -660,15 +654,13 @@ def main():
             all_examples.extend(examples)
         
         puzzle_count = len(all_examples) - game_count
-        print(f"Processed {puzzle_count:,} puzzle examples")
+        logger.info("Processed %s puzzle examples", f"{puzzle_count:,}")
         
     finally:
         teacher.close()
     
     # Shuffle and save
-    print(f"\n{'='*70}")
-    print("Step 3: Shuffling and saving")
-    print(f"{'='*70}")
+    logger.info("Step 3: shuffling and saving")
     
     rng.shuffle(all_examples)
     
@@ -680,61 +672,61 @@ def main():
     dataset.save_to_disk(output_path)
     
     # Print statistics
-    print(f"\n{'='*70}")
-    print("Dataset Statistics")
-    print(f"{'='*70}")
-    print(f"Total examples: {len(all_examples):,}")
+    logger.info("Dataset statistics:")
+    logger.info("Total examples: %s", f"{len(all_examples):,}")
     
     # Source distribution
     sources = [ex['source'] for ex in all_examples]
     game_count = sum(1 for s in sources if s == 'game')
     puzzle_count = sum(1 for s in sources if s == 'puzzle')
-    print(f"Games: {game_count:,} ({100*game_count/len(all_examples):.1f}%)")
-    print(f"Puzzles: {puzzle_count:,} ({100*puzzle_count/len(all_examples):.1f}%)")
+    logger.info("Games: %s (%.1f%%)", f"{game_count:,}", 100 * game_count / len(all_examples))
+    logger.info("Puzzles: %s (%.1f%%)", f"{puzzle_count:,}", 100 * puzzle_count / len(all_examples))
     
     # Move quality distribution
     ranks = [ex['target_move_rank'] for ex in all_examples if ex.get('target_move_rank', 0) > 0]
     if ranks:
-        print(f"\nMove quality:")
-        print(f"  Best move (rank 1): {sum(1 for r in ranks if r == 1):,} ({100*sum(1 for r in ranks if r == 1)/len(ranks):.1f}%)")
-        print(f"  Top 3: {sum(1 for r in ranks if r <= 3):,} ({100*sum(1 for r in ranks if r <= 3)/len(ranks):.1f}%)")
-        print(f"  Top 5: {sum(1 for r in ranks if r <= 5):,} ({100*sum(1 for r in ranks if r <= 5)/len(ranks):.1f}%)")
+        best = sum(1 for r in ranks if r == 1)
+        top3 = sum(1 for r in ranks if r <= 3)
+        top5 = sum(1 for r in ranks if r <= 5)
+        logger.info("Move quality (target rank):")
+        logger.info("  Best move (rank 1): %s (%.1f%%)", f"{best:,}", 100 * best / len(ranks))
+        logger.info("  Top 3: %s (%.1f%%)", f"{top3:,}", 100 * top3 / len(ranks))
+        logger.info("  Top 5: %s (%.1f%%)", f"{top5:,}", 100 * top5 / len(ranks))
     
     # CP loss distribution
     cp_losses = [ex['target_move_cp_loss'] for ex in all_examples if ex.get('target_move_cp_loss') is not None]
     if cp_losses:
-        print(f"\nCentipawn loss:")
-        print(f"  Average: {sum(cp_losses)/len(cp_losses):.1f}")
-        print(f"  ≤10cp (excellent): {sum(1 for l in cp_losses if l <= 10):,} ({100*sum(1 for l in cp_losses if l <= 10)/len(cp_losses):.1f}%)")
-        print(f"  ≤30cp (good): {sum(1 for l in cp_losses if l <= 30):,} ({100*sum(1 for l in cp_losses if l <= 30)/len(cp_losses):.1f}%)")
-        print(f"  ≤100cp (inaccuracy): {sum(1 for l in cp_losses if l <= 100):,} ({100*sum(1 for l in cp_losses if l <= 100)/len(cp_losses):.1f}%)")
+        le10 = sum(1 for l in cp_losses if l <= 10)
+        le30 = sum(1 for l in cp_losses if l <= 30)
+        le100 = sum(1 for l in cp_losses if l <= 100)
+        logger.info("Centipawn loss:")
+        logger.info("  Average: %.1f", sum(cp_losses) / len(cp_losses))
+        logger.info("  <=10cp (excellent): %s (%.1f%%)", f"{le10:,}", 100 * le10 / len(cp_losses))
+        logger.info("  <=30cp (good): %s (%.1f%%)", f"{le30:,}", 100 * le30 / len(cp_losses))
+        logger.info("  <=100cp (inaccuracy): %s (%.1f%%)", f"{le100:,}", 100 * le100 / len(cp_losses))
     
     # Probability stats
     probs = [ex['target_move_prob'] for ex in all_examples if ex.get('target_move_prob', 0) > 0]
     if probs:
-        print(f"\nTarget move probability (from Stockfish):")
-        print(f"  Average: {sum(probs)/len(probs):.4f}")
-        print(f"  Min: {min(probs):.4f}")
-        print(f"  Max: {max(probs):.4f}")
+        logger.info("Target move probability (from Stockfish):")
+        logger.info("  Average: %.4f", sum(probs) / len(probs))
+        logger.info("  Min: %.4f", min(probs))
+        logger.info("  Max: %.4f", max(probs))
     
-    print(f"\n{'='*70}")
-    print(f"✓ Dataset saved to: {output_path}")
-    print(f"{'='*70}")
+    logger.info("Dataset saved to: %s", output_path)
     
     # Show sample
-    print("\nSample entry:")
-    print("-" * 70)
+    logger.info("Sample entry:")
     sample = all_examples[0]
-    print(f"FEN: {sample['fen']}")
-    print(f"Target: {sample['target_move_uci']}")
-    print(f"Best: {sample['best_move_uci']} ({sample['best_score_cp']:+d}cp)")
-    print(f"Target rank: {sample['target_move_rank']}")
-    print(f"Target CP loss: {sample['target_move_cp_loss']}")
-    print(f"Target probability: {sample['target_move_prob']:.4f}")
-    print(f"Moves in distribution: {len(sample['move_probs'])}")
-    print("\nThinking section:")
-    print(sample['messages'][1]['content'][:500] + "...")
+    logger.info("FEN: %s", sample["fen"])
+    logger.info("Target: %s", sample["target_move_uci"])
+    logger.info("Best: %s (%+dcp)", sample["best_move_uci"], sample["best_score_cp"])
+    logger.info("Target rank: %s", sample["target_move_rank"])
+    logger.info("Target CP loss: %s", sample["target_move_cp_loss"])
+    logger.info("Target probability: %.4f", sample["target_move_prob"])
+    logger.info("Moves in distribution: %d", len(sample["move_probs"]))
+    logger.info("Thinking section (truncated):\n%s", sample["messages"][1]["content"][:500] + "...")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,24 +1,16 @@
 #!/usr/bin/env python3
 """
-Optimized Chess LLM Evaluation Script
+Fast evaluation for chess models.
 
-Key optimizations:
-- Batched generation (8-16x faster)
-- Persistent Stockfish instance
-- Parallel Stockfish evaluation with multiprocessing
-- torch.compile for inference
-- Flash Attention 2
-- Static KV cache
-- Greedy decoding (faster than sampling)
-
-Usage:
-    python eval/evaluate_fast.py --model ./outputs/chess-sft-final
-    python eval/evaluate_fast.py --model ./outputs/chess-sft-final --batch_size 32
-    python eval/evaluate_fast.py --model ./outputs/chess-sft-final --stockfish /usr/bin/stockfish --workers 8
+This script generates moves for a batch of positions, checks legality/accuracy,
+and optionally computes ACPL via Stockfish.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import yaml
@@ -26,7 +18,6 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, asdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
 import time
 
 # Ensure repo root is on sys.path when running from subfolders
@@ -38,6 +29,8 @@ import chess
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+logger = logging.getLogger(__name__)
 
 from src.utils.chess_utils import (
     render_board_utf, 
@@ -80,7 +73,7 @@ def load_config(path: Optional[str]) -> Dict[str, Any]:
 
 def load_model(model_path: str, device: str = "auto", compile_model: bool = True):
     """Load model optimized for fast inference."""
-    print(f"Loading model from {model_path}")
+    logger.info("Loading model from %s", model_path)
     
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     
@@ -102,12 +95,12 @@ def load_model(model_path: str, device: str = "auto", compile_model: bool = True
     
     # Compile model for faster inference
     if compile_model:
-        print("Compiling model with torch.compile (this may take a minute)...")
+        logger.info("Compiling model with torch.compile (this may take a minute)...")
         try:
             model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
-            print("✓ Model compiled")
+            logger.info("Model compiled")
         except Exception as e:
-            print(f"⚠ Could not compile model: {e}")
+            logger.warning("Could not compile model: %s", e)
     
     return model, tokenizer
 
@@ -251,7 +244,7 @@ class StockfishEvaluator:
             board = chess.Board(fen)
             try:
                 board.push_uci(predicted_move)
-            except:
+            except (ValueError, chess.IllegalMoveError):
                 return None
             
             sf.set_fen_position(board.fen())
@@ -275,8 +268,8 @@ class StockfishEvaluator:
         if self._sf is not None:
             try:
                 self._sf.__del__()
-            except:
-                pass
+            except Exception:
+                logger.debug("Stockfish cleanup failed", exc_info=True)
             self._sf = None
 
 
@@ -463,8 +456,8 @@ def load_test_positions(
     rng = random.Random(seed)
     rng.shuffle(positions)
 
-    print(f"Loaded {len(positions)} test positions")
-    print(f"  Games: {games_added}, Puzzles: {puzzles_added}")
+    logger.info("Loaded %s test positions", len(positions))
+    logger.info("  Games: %s, Puzzles: %s", games_added, puzzles_added)
     return positions
 
 
@@ -487,7 +480,7 @@ def evaluate_model(
     all_predictions = []
     
     # Phase 1: Batched model inference
-    print(f"\nPhase 1: Generating moves (batch_size={batch_size})...")
+    logger.info("Phase 1: generating moves (batch_size=%s)", batch_size)
     
     for i in tqdm(range(0, len(positions), batch_size), desc="Generating"):
         batch_positions = positions[i:i + batch_size]
@@ -528,7 +521,7 @@ def evaluate_model(
     
     # Phase 2: Parallel Stockfish evaluation (if enabled)
     if stockfish_path:
-        print(f"\nPhase 2: Stockfish evaluation (workers={stockfish_workers})...")
+        logger.info("Phase 2: Stockfish evaluation (workers=%s)", stockfish_workers)
         
         # Collect legal moves for Stockfish evaluation
         legal_positions = [
@@ -614,6 +607,11 @@ def main():
                         help='Debug mode (verbose output)')
     
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(levelname)s %(message)s",
+    )
     
     # Setup optimizations
     setup_torch_optimizations()
@@ -636,14 +634,14 @@ def main():
     )
     
     # Warmup (important for torch.compile)
-    print("\nWarming up model...")
+    logger.info("Warming up model...")
     warmup_board = chess.Board()
     _ = generate_moves_batch(model, tokenizer, [warmup_board, warmup_board])
-    print("✓ Model warmed up")
+    logger.info("Model warmed up")
     
     # Evaluate
     start_time = time.time()
-    print("\nStarting evaluation...")
+    logger.info("Starting evaluation...")
     
     results = evaluate_model(
         model=model,
@@ -660,44 +658,39 @@ def main():
     
     elapsed = time.time() - start_time
     
-    # Print results
-    print("\n" + "=" * 60)
-    print("Evaluation Results")
-    print("=" * 60)
+    # Report results
     metrics = results['metrics']
-    print(f"Total positions: {metrics['total_positions']}")
-    print(f"Legal move rate: {metrics['legal_move_rate']:.2%}")
-    print(f"Accuracy: {metrics['accuracy']:.2%}")
+    logger.info("Total positions: %s", metrics["total_positions"])
+    logger.info("Legal move rate: %.2f%%", metrics["legal_move_rate"] * 100)
+    logger.info("Accuracy: %.2f%%", metrics["accuracy"] * 100)
     
     if 'acpl' in metrics:
-        print(f"\n--- ACPL (Average Centipawn Loss) ---")
-        print(f"ACPL:       {metrics['acpl']:.1f} (n={metrics['acpl_n']})")
+        logger.info("ACPL: %.1f (n=%s)", metrics["acpl"], metrics["acpl_n"])
         if 'acpl_white' in metrics:
-            print(f"ACPL White: {metrics['acpl_white']:.1f} (n={metrics['acpl_white_n']})")
+            logger.info("ACPL White: %.1f (n=%s)", metrics["acpl_white"], metrics["acpl_white_n"])
         if 'acpl_black' in metrics:
-            print(f"ACPL Black: {metrics['acpl_black']:.1f} (n={metrics['acpl_black_n']})")
-        print(f"ACPL Median: {metrics['acpl_median']:.1f}")
+            logger.info("ACPL Black: %.1f (n=%s)", metrics["acpl_black"], metrics["acpl_black_n"])
+        logger.info("ACPL Median: %.1f", metrics["acpl_median"])
     
-    print(f"\nTotal time: {elapsed:.1f}s ({elapsed/len(positions)*1000:.1f}ms per position)")
-    print(f"Throughput: {len(positions)/elapsed:.1f} positions/second")
+    logger.info("Total time: %.1fs (%.1fms/position)", elapsed, elapsed / len(positions) * 1000)
+    logger.info("Throughput: %.1f positions/second", len(positions) / elapsed)
 
     if metrics.get('by_source'):
         for source, sm in metrics['by_source'].items():
-            print("\n" + "-" * 40)
-            print(f"Source: {source}")
-            print(f"Total positions: {sm['total_positions']}")
-            print(f"Legal move rate: {sm['legal_move_rate']:.2%}")
-            print(f"Accuracy: {sm['accuracy']:.2%}")
+            logger.info("Source: %s", source)
+            logger.info("  Total positions: %s", sm["total_positions"])
+            logger.info("  Legal move rate: %.2f%%", sm["legal_move_rate"] * 100)
+            logger.info("  Accuracy: %.2f%%", sm["accuracy"] * 100)
             if 'acpl' in sm:
-                print(f"ACPL: {sm['acpl']:.1f} (n={sm.get('acpl_n', 0)})")
+                logger.info("  ACPL: %.1f (n=%s)", sm["acpl"], sm.get("acpl_n", 0))
     
     # Save results
-    print(f"\nSaving results to {args.output}")
+    logger.info("Saving results to %s", args.output)
     with open(args.output, 'w') as f:
         json.dump(results, f, indent=2)
     
-    print("\n✓ Evaluation complete!")
+    logger.info("Evaluation complete")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

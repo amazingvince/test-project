@@ -22,7 +22,6 @@ import random
 import re
 import subprocess
 import sys
-import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -32,13 +31,6 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-# Suppress optional-import warnings in src/__init__.py for environments without torch.
-warnings.filterwarnings(
-    "ignore",
-    category=UserWarning,
-    message=r"Distillation modules not available:.*",
-)
 
 import chess
 from datasets import DatasetDict, load_from_disk

@@ -40,7 +40,8 @@ from transformers import (
     Trainer,
     TrainerCallback,
 )
-import chess
+
+from src.utils.chess_eval_callback import FastChessEvalCallback as ChessEvalCallback, prepare_eval_positions
 
 # ============================================================================
 # Performance optimizations - set early
@@ -66,9 +67,9 @@ LIGER_AVAILABLE = False
 try:
     from liger_kernel.transformers import apply_liger_kernel_to_qwen3
     LIGER_AVAILABLE = True
-    print("✓ Liger Kernel available")
+    print("Liger Kernel available")
 except ImportError:
-    print("⚠ Liger Kernel not installed. Install with: pip install liger-kernel")
+    print("Liger Kernel not installed. Install with: pip install liger-kernel")
 
 
 def apply_liger_kernels_no_ce(model_name: str):
@@ -89,8 +90,8 @@ def apply_liger_kernels_no_ce(model_name: str):
             cross_entropy=False,
             fused_linear_cross_entropy=False,
         )
-        print("✓ Applied Liger kernels to Qwen3 (RoPE, RMSNorm, SwiGLU)")
-        print("  → Cross Entropy disabled (using CCE for weighted loss)")
+        print("Applied Liger kernels to Qwen3 (RoPE, RMSNorm, SwiGLU)")
+        print("  Cross Entropy disabled (using CCE for weighted loss)")
     
     elif 'qwen2' in model_name_lower:
         try:
@@ -99,9 +100,9 @@ def apply_liger_kernels_no_ce(model_name: str):
                 rope=True, rms_norm=True, swiglu=True,
                 cross_entropy=False, fused_linear_cross_entropy=False,
             )
-            print("✓ Applied Liger kernels to Qwen2 (RoPE, RMSNorm, SwiGLU)")
+            print("Applied Liger kernels to Qwen2 (RoPE, RMSNorm, SwiGLU)")
         except ImportError:
-            print("⚠ Qwen2 Liger kernels not available")
+            print("Qwen2 Liger kernels not available")
     
     elif 'llama' in model_name_lower:
         try:
@@ -110,9 +111,9 @@ def apply_liger_kernels_no_ce(model_name: str):
                 rope=True, rms_norm=True, swiglu=True,
                 cross_entropy=False, fused_linear_cross_entropy=False,
             )
-            print("✓ Applied Liger kernels to Llama (RoPE, RMSNorm, SwiGLU)")
+            print("Applied Liger kernels to Llama (RoPE, RMSNorm, SwiGLU)")
         except ImportError:
-            print("⚠ Llama Liger kernels not available")
+            print("Llama Liger kernels not available")
     
     elif 'mistral' in model_name_lower:
         try:
@@ -121,11 +122,11 @@ def apply_liger_kernels_no_ce(model_name: str):
                 rope=True, rms_norm=True, swiglu=True,
                 cross_entropy=False, fused_linear_cross_entropy=False,
             )
-            print("✓ Applied Liger kernels to Mistral (RoPE, RMSNorm, SwiGLU)")
+            print("Applied Liger kernels to Mistral (RoPE, RMSNorm, SwiGLU)")
         except ImportError:
-            print("⚠ Mistral Liger kernels not available")
+            print("Mistral Liger kernels not available")
     else:
-        print(f"⚠ No Liger kernel support for model: {model_name}")
+        print(f"No Liger kernel support for model: {model_name}")
 
 
 # ============================================================================
@@ -136,9 +137,9 @@ CCE_AVAILABLE = False
 try:
     from cut_cross_entropy import linear_cross_entropy
     CCE_AVAILABLE = True
-    print("✓ Cut Cross Entropy available")
+    print("Cut Cross Entropy available")
 except ImportError:
-    print("⚠ Cut Cross Entropy not installed. Install with:")
+    print("Cut Cross Entropy not installed. Install with:")
     print('  pip install "cut-cross-entropy @ git+https://github.com/apple/ml-cross-entropy.git"')
 
 
@@ -265,7 +266,7 @@ class WeightedCCETrainer(Trainer):
     Loss computation:
     1. Get per-token losses (CCE with reduction="none")
     2. Labels already have -100 for prompt tokens (ignored by CCE)
-    3. Sum token losses per sample → per-sample loss
+    3. Sum token losses per sample -> per-sample loss
     4. Multiply by sample weight
     5. Average weighted losses across samples
     """
@@ -313,7 +314,7 @@ class WeightedCCETrainer(Trainer):
                 return (loss, outputs) if return_outputs else loss
             except Exception as e:
                 if not self._warned:
-                    print(f"⚠ CCE computation failed: {e}, using standard CE")
+                    print(f"CCE computation failed: {e}, using standard CE")
                     self._warned = True
         
         return self._compute_standard_ce_loss(
@@ -336,7 +337,7 @@ class WeightedCCETrainer(Trainer):
         Sample-level weighting approach:
         1. Get per-token losses (prompt tokens already masked with -100)
         2. Sum losses per sample to get per-sample loss
-        3. Divide by valid token count per sample → mean loss per sample
+        3. Divide by valid token count per sample -> mean loss per sample
         4. Multiply by sample weight
         5. Average across samples
         """
@@ -367,7 +368,7 @@ class WeightedCCETrainer(Trainer):
         # Reshape to (batch, seq-1)
         per_token_loss = per_token_loss.view(batch_size, seq_len - 1)
         
-        # Sum per sample, then divide by valid token count → mean loss per sample
+        # Sum per sample, then divide by valid token count -> mean loss per sample
         per_sample_loss = per_token_loss.sum(dim=1) / valid_tokens_per_sample
         
         # Apply sample weights
@@ -429,292 +430,6 @@ class WeightedCCETrainer(Trainer):
         return (weighted_loss, outputs) if return_outputs else weighted_loss
 
 
-# ============================================================================
-# Fast Chess Evaluation Callback
-# ============================================================================
-
-def _stockfish_eval_worker(args):
-    """Worker function for parallel Stockfish evaluation."""
-    idx, fen, predicted_move, stockfish_path, depth = args
-    
-    try:
-        from stockfish import Stockfish
-        import chess
-        
-        board = chess.Board(fen)
-        is_white = board.turn == chess.WHITE
-        
-        sf = Stockfish(path=stockfish_path, depth=depth, parameters={"Threads": 1, "Hash": 32})
-        sf.set_fen_position(fen)
-        
-        top_moves = sf.get_top_moves(2)
-        if not top_moves:
-            return (idx, None, is_white)
-        
-        best_eval = top_moves[0].get('Centipawn')
-        
-        if top_moves[0].get('Move') == predicted_move:
-            return (idx, 0, is_white)
-        
-        try:
-            board.push_uci(predicted_move)
-        except:
-            return (idx, None, is_white)
-        
-        sf.set_fen_position(board.fen())
-        eval_after = sf.get_evaluation()
-        
-        if eval_after['type'] != 'cp' or best_eval is None:
-            return (idx, None, is_white)
-        
-        our_eval = -eval_after['value']
-        cpl = best_eval - our_eval
-        
-        return (idx, max(0, cpl), is_white)
-    
-    except Exception:
-        return (idx, None, True)
-
-
-class FastChessEvalCallback(TrainerCallback):
-    """Custom callback for fast chess move evaluation during training."""
-    
-    def __init__(
-        self,
-        eval_positions: List[Dict[str, Any]],
-        tokenizer,
-        eval_batch_size: int = 32,
-        max_new_tokens: int = 64,
-        eval_every_n_steps: int = 500,
-        stockfish_path: Optional[str] = None,
-        stockfish_workers: int = 8,
-        stockfish_depth: int = 10,
-    ):
-        self.eval_positions = eval_positions
-        self.tokenizer = tokenizer
-        self.eval_batch_size = eval_batch_size
-        self.max_new_tokens = max_new_tokens
-        self.eval_every_n_steps = eval_every_n_steps
-        self.stockfish_path = stockfish_path
-        self.stockfish_workers = stockfish_workers
-        self.stockfish_depth = stockfish_depth
-        self._original_padding_side = tokenizer.padding_side
-    
-    def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step > 0 and state.global_step % self.eval_every_n_steps == 0:
-            model = kwargs.get('model')
-            if model is not None:
-                self._run_chess_eval(model, state.global_step)
-    
-    def on_train_end(self, args, state, control, **kwargs):
-        model = kwargs.get('model')
-        if model is not None:
-            self._run_chess_eval(model, state.global_step, final=True)
-    
-    @torch.inference_mode()
-    def _run_chess_eval(self, model, global_step: int, final: bool = False):
-        """Run batched chess evaluation with ACPL."""
-        from src.utils.chess_utils import (
-            render_board_utf,
-            get_legal_moves_uci,
-            get_first_legal_move,
-            extract_uci_from_response,
-            validate_uci_move
-        )
-        from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
-        from concurrent.futures import ProcessPoolExecutor, as_completed
-        
-        model.eval()
-        self.tokenizer.padding_side = "left"
-        
-        all_results = []
-        
-        for i in range(0, len(self.eval_positions), self.eval_batch_size):
-            batch_positions = self.eval_positions[i:i + self.eval_batch_size]
-            
-            prompts = []
-            boards = []
-            for pos in batch_positions:
-                board = chess.Board(pos['fen'])
-                boards.append(board)
-                
-                user_content = DEFAULT_PROMPT_TEMPLATE.format(
-                    fen=board.fen(),
-                    legal_moves=get_legal_moves_uci(board),
-                    board=render_board_utf(board),
-                    example_move=get_first_legal_move(board) or ""
-                )
-                
-                messages = [{"role": "user", "content": user_content}]
-                prompt = self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-                prompts.append(prompt)
-            
-            inputs = self.tokenizer(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=1024
-            )
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-            input_length = inputs['input_ids'].shape[1]
-            
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=False,
-                pad_token_id=self.tokenizer.pad_token_id,
-                use_cache=True,
-            )
-            
-            for j, output in enumerate(outputs):
-                response = self.tokenizer.decode(
-                    output[input_length:],
-                    skip_special_tokens=True
-                )
-                predicted = extract_uci_from_response(response)
-                
-                board = boards[j]
-                pos = batch_positions[j]
-                target = pos['target_move_uci']
-                
-                is_legal = predicted is not None and validate_uci_move(board, predicted)
-                is_correct = predicted == target
-                is_white = board.turn == chess.WHITE
-                
-                all_results.append({
-                    'idx': i + j,
-                    'fen': pos['fen'],
-                    'predicted': predicted,
-                    'is_legal': is_legal,
-                    'is_correct': is_correct,
-                    'is_white': is_white,
-                    'cpl': None,
-                })
-        
-        self.tokenizer.padding_side = self._original_padding_side
-        
-        # Stockfish evaluation for ACPL
-        if self.stockfish_path:
-            legal_positions = [
-                (r['idx'], r['fen'], r['predicted'], self.stockfish_path, self.stockfish_depth)
-                for r in all_results if r['is_legal'] and r['predicted']
-            ]
-            
-            if legal_positions:
-                cpl_map = {}
-                white_map = {}
-                
-                with ProcessPoolExecutor(max_workers=self.stockfish_workers) as executor:
-                    futures = {executor.submit(_stockfish_eval_worker, args): args[0] 
-                               for args in legal_positions}
-                    
-                    for future in as_completed(futures):
-                        try:
-                            idx, cpl, is_white = future.result(timeout=5)
-                            if cpl is not None:
-                                cpl_map[idx] = cpl
-                                white_map[idx] = is_white
-                        except:
-                            pass
-                
-                for r in all_results:
-                    if r['idx'] in cpl_map:
-                        r['cpl'] = cpl_map[r['idx']]
-                        r['is_white'] = white_map[r['idx']]
-        
-        # Calculate metrics
-        total = len(all_results)
-        legal = sum(1 for r in all_results if r['is_legal'])
-        correct = sum(1 for r in all_results if r['is_correct'])
-        
-        legal_rate = legal / total if total > 0 else 0
-        accuracy = correct / total if total > 0 else 0
-        
-        cpl_all = [r['cpl'] for r in all_results if r['cpl'] is not None]
-        cpl_white = [r['cpl'] for r in all_results if r['cpl'] is not None and r['is_white']]
-        cpl_black = [r['cpl'] for r in all_results if r['cpl'] is not None and not r['is_white']]
-        
-        acpl = sum(cpl_all) / len(cpl_all) if cpl_all else None
-        acpl_white = sum(cpl_white) / len(cpl_white) if cpl_white else None
-        acpl_black = sum(cpl_black) / len(cpl_black) if cpl_black else None
-        
-        prefix = "final_" if final else ""
-        print(f"\n{'='*60}")
-        print(f"Chess Eval @ Step {global_step}")
-        print(f"{'='*60}")
-        print(f"  Positions: {total}")
-        print(f"  Legal Move Rate: {legal_rate:.2%} ({legal}/{total})")
-        print(f"  Accuracy: {accuracy:.2%} ({correct}/{total})")
-        
-        if acpl is not None:
-            print(f"  ACPL: {acpl:.1f} (n={len(cpl_all)})")
-        if acpl_white is not None:
-            print(f"  ACPL White: {acpl_white:.1f} (n={len(cpl_white)})")
-        if acpl_black is not None:
-            print(f"  ACPL Black: {acpl_black:.1f} (n={len(cpl_black)})")
-        
-        print(f"{'='*60}\n")
-        
-        try:
-            import wandb
-            if wandb.run is not None:
-                log_dict = {
-                    f"{prefix}chess/legal_move_rate": legal_rate,
-                    f"{prefix}chess/accuracy": accuracy,
-                }
-                if acpl is not None:
-                    log_dict[f"{prefix}chess/acpl"] = acpl
-                wandb.log(log_dict, step=global_step)
-        except:
-            pass
-        
-        model.train()
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def prepare_eval_positions_for_callback(eval_dataset, max_positions: int = 500):
-    """Prepare evaluation positions for the callback."""
-    def collect_positions(dataset, limit):
-        collected = []
-        for i, example in enumerate(dataset):
-            if i >= limit:
-                break
-            if hasattr(example, 'keys'):
-                pos = dict(example)
-            else:
-                pos = example
-            if 'fen' in pos and 'target_move_uci' in pos:
-                collected.append({
-                    'fen': pos['fen'],
-                    'target_move_uci': pos['target_move_uci'],
-                })
-        return collected
-
-    if isinstance(eval_dataset, dict):
-        datasets = []
-        if 'games' in eval_dataset:
-            datasets.append(eval_dataset['games'])
-        if 'puzzles' in eval_dataset:
-            datasets.append(eval_dataset['puzzles'])
-        if not datasets:
-            datasets = list(eval_dataset.values())
-        per_ds = max(1, max_positions // len(datasets))
-        positions = []
-        for ds in datasets:
-            positions.extend(collect_positions(ds, per_ds))
-        return positions[:max_positions]
-
-    return collect_positions(eval_dataset, max_positions)
-
-
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load YAML configuration file."""
     with open(config_path, 'r') as f:
@@ -752,7 +467,7 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
-        print("✓ Gradient checkpointing enabled (non-reentrant)")
+        print("Gradient checkpointing enabled (non-reentrant)")
     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -769,7 +484,7 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
     if training_config.get('torch_compile', False):
         print("Compiling model with torch.compile...")
         model = torch.compile(model, mode="reduce-overhead")
-        print("✓ Model compiled")
+        print("Model compiled")
     
     return model, tokenizer
 
@@ -1038,7 +753,7 @@ def create_trainer(
     callbacks = []
     if chess_eval_callback is not None:
         callbacks.append(chess_eval_callback)
-        print("✓ Fast chess evaluation callback enabled")
+        print("Fast chess evaluation callback enabled")
     
     trainer = WeightedCCETrainer(
         model=model,
@@ -1118,12 +833,12 @@ def main():
     print("\n" + "=" * 60)
     print("OPTIMIZATION SETTINGS")
     print("=" * 60)
-    print(f"✓ TF32 enabled: {torch.backends.cuda.matmul.allow_tf32}")
-    print(f"✓ Cut Cross Entropy: {'enabled' if use_cce else 'disabled'}")
-    print(f"✓ Liger Kernels (RoPE/RMSNorm/SwiGLU): {'enabled' if use_liger else 'disabled'}")
-    print(f"✓ Flash Attention: {config.get('model', {}).get('attn_implementation', 'flash_attention_2')}")
-    print(f"✓ Prompt Masking: enabled (only train on assistant response)")
-    print(f"✓ Sample-level weighting: enabled")
+    print(f"TF32 enabled: {torch.backends.cuda.matmul.allow_tf32}")
+    print(f"Cut Cross Entropy: {'enabled' if use_cce else 'disabled'}")
+    print(f"Liger Kernels (RoPE/RMSNorm/SwiGLU): {'enabled' if use_liger else 'disabled'}")
+    print(f"Flash Attention: {config.get('model', {}).get('attn_implementation', 'flash_attention_2')}")
+    print("Prompt masking: enabled (train only on assistant response)")
+    print("Sample-level weighting: enabled")
     print("=" * 60)
     
     print("\nSetting up model and tokenizer...")
@@ -1181,13 +896,13 @@ def main():
                 stockfish_path = path
                 break
 
-        eval_positions = prepare_eval_positions_for_callback(
+        eval_positions = prepare_eval_positions(
             eval_dataset,
-            max_positions=training_config.get('chess_eval_positions', 500)
+            max_positions=training_config.get("chess_eval_positions", 500),
         )
 
         if eval_positions:
-            chess_eval_callback = FastChessEvalCallback(
+            chess_eval_callback = ChessEvalCallback(
                 eval_positions=eval_positions,
                 tokenizer=tokenizer,
                 eval_batch_size=training_config.get('chess_eval_batch_size', 32),
@@ -1197,11 +912,11 @@ def main():
                 stockfish_workers=eval_config.get('stockfish_workers', 8),
                 stockfish_depth=eval_config.get('stockfish_depth', 10),
             )
-            print(f"✓ Chess eval callback: {len(eval_positions)} positions")
+            print(f"Chess eval callback: {len(eval_positions)} positions")
             if stockfish_path:
-                print(f"✓ Stockfish found: {stockfish_path} (ACPL enabled)")
+                print(f"Stockfish found: {stockfish_path} (ACPL enabled)")
             else:
-                print("⚠ Stockfish not found - ACPL metrics disabled")
+                print("Stockfish not found - ACPL metrics disabled")
     
     print("\nCreating trainer...")
     trainer = create_trainer(

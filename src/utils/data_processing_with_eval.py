@@ -9,6 +9,7 @@ Includes centipawn-based loss weighting for reward shaping.
 """
 
 import math
+import logging
 import random
 import chess
 from typing import Iterator, Dict, Any, Optional, List
@@ -25,6 +26,8 @@ from .chess_utils import (
     get_legal_moves_uci,
     get_first_legal_move,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -729,15 +732,15 @@ def preprocess_and_save_with_eval(
     games_target = int(target_size * games_ratio)
     puzzles_target = target_size - games_target
     
-    print(f"Target: {games_target:,} game positions, {puzzles_target:,} puzzles")
-    print(f"Stockfish depth: {stockfish_depth}, workers: {stockfish_workers}")
+    logger.info("Target: %s game positions, %s puzzles", f"{games_target:,}", f"{puzzles_target:,}")
+    logger.info("Stockfish: depth=%d workers=%d", stockfish_depth, stockfish_workers)
     
     # Step 1: Collect positions (without Stockfish yet)
-    print("\nStep 1: Collecting positions...")
+    logger.info("Step 1/3: collecting positions...")
     raw_positions = []
     
     # Collect game positions
-    print("Processing games...")
+    logger.info("Processing games...")
     game_count = 0
     rng = random.Random(seed)
     
@@ -806,10 +809,10 @@ def preprocess_and_save_with_eval(
             if game_count >= games_target:
                 break
     
-    print(f"Collected {game_count:,} game positions")
+    logger.info("Collected %s game positions", f"{game_count:,}")
     
     # Collect puzzle positions
-    print("Processing puzzles...")
+    logger.info("Processing puzzles...")
     puzzle_count = 0
     
     puzzle_dataset = load_dataset(
@@ -843,11 +846,11 @@ def preprocess_and_save_with_eval(
         if puzzle_count >= puzzles_target:
             break
 
-    print(f"Collected {puzzle_count:,} puzzle positions")
-    print(f"Total raw positions: {len(raw_positions):,}")
+    logger.info("Collected %s puzzle positions", f"{puzzle_count:,}")
+    logger.info("Total raw positions: %s", f"{len(raw_positions):,}")
     
     # Step 2: Batch analyze with Stockfish
-    print("\nStep 2: Analyzing with Stockfish...")
+    logger.info("Step 2/3: analyzing with Stockfish...")
     analyzed_positions = process_positions_batch(
         positions=raw_positions,
         stockfish_path=stockfish_path,
@@ -857,18 +860,18 @@ def preprocess_and_save_with_eval(
         config=config
     )
     
-    print(f"Analyzed {len(analyzed_positions):,} positions")
+    logger.info("Analyzed %s positions", f"{len(analyzed_positions):,}")
     
     # Step 3: Shuffle and save
-    print("\nStep 3: Shuffling and saving...")
+    logger.info("Step 3/3: shuffling and saving...")
     rng.shuffle(analyzed_positions)
     
     dataset = Dataset.from_list(analyzed_positions)
     dataset.save_to_disk(output_path)
     
     # Print statistics
-    print(f"\nSaved to {output_path}")
-    print(f"Total examples: {len(analyzed_positions):,}")
+    logger.info("Saved to %s", output_path)
+    logger.info("Total examples: %s", f"{len(analyzed_positions):,}")
     
     # Quality statistics
     ranks = [p['target_move_rank'] for p in analyzed_positions if p.get('target_move_rank', 0) > 0]
@@ -876,55 +879,37 @@ def preprocess_and_save_with_eval(
     weights = [p['loss_weight'] for p in analyzed_positions if 'loss_weight' in p]
     
     if ranks:
-        print(f"\nMove quality stats:")
-        print(f"  Avg rank: {sum(ranks)/len(ranks):.2f}")
-        print(f"  Top-1 moves: {sum(1 for r in ranks if r == 1):,} ({100*sum(1 for r in ranks if r == 1)/len(ranks):.1f}%)")
-        print(f"  Top-3 moves: {sum(1 for r in ranks if r <= 3):,} ({100*sum(1 for r in ranks if r <= 3)/len(ranks):.1f}%)")
+        logger.info("Move quality stats: avg_rank=%.2f", sum(ranks) / len(ranks))
+        logger.info(
+            "Top-1 moves: %s (%.1f%%)",
+            f"{sum(1 for r in ranks if r == 1):,}",
+            100 * sum(1 for r in ranks if r == 1) / len(ranks),
+        )
+        logger.info(
+            "Top-3 moves: %s (%.1f%%)",
+            f"{sum(1 for r in ranks if r <= 3):,}",
+            100 * sum(1 for r in ranks if r <= 3) / len(ranks),
+        )
     
     if cp_losses:
-        print(f"\nCentipawn loss stats:")
-        print(f"  Avg CP loss: {sum(cp_losses)/len(cp_losses):.1f}")
-        print(f"  ≤20cp: {sum(1 for l in cp_losses if l <= 20):,} ({100*sum(1 for l in cp_losses if l <= 20)/len(cp_losses):.1f}%)")
-        print(f"  ≤50cp: {sum(1 for l in cp_losses if l <= 50):,} ({100*sum(1 for l in cp_losses if l <= 50)/len(cp_losses):.1f}%)")
+        logger.info("Centipawn loss stats: avg_cp_loss=%.1f", sum(cp_losses) / len(cp_losses))
+        logger.info(
+            "<=20cp: %s (%.1f%%)",
+            f"{sum(1 for l in cp_losses if l <= 20):,}",
+            100 * sum(1 for l in cp_losses if l <= 20) / len(cp_losses),
+        )
+        logger.info(
+            "<=50cp: %s (%.1f%%)",
+            f"{sum(1 for l in cp_losses if l <= 50):,}",
+            100 * sum(1 for l in cp_losses if l <= 50) / len(cp_losses),
+        )
     
     if weights:
-        print(f"\nLoss weight stats:")
-        print(f"  Min: {min(weights):.3f}")
-        print(f"  Max: {max(weights):.3f}")
-        print(f"  Mean: {sum(weights)/len(weights):.3f}")
+        logger.info(
+            "Loss weight stats: min=%.3f max=%.3f mean=%.3f",
+            min(weights),
+            max(weights),
+            sum(weights) / len(weights),
+        )
     
     return dataset
-
-
-if __name__ == "__main__":
-    # Test with a small batch
-    print("Testing data processing with Stockfish...")
-    
-    test_config = {
-        'loss_weighting': {
-            'weight_type': 'cp_loss',
-            'min_weight': 0.1,
-            'max_weight': 2.0,
-            'max_cp_loss': 200
-        }
-    }
-    
-    # Test loss weight computation
-    print("\nTesting loss weight computation:")
-    test_cases = [
-        (1, 0, 20),    # Best move
-        (2, 15, 20),   # Second best, 15cp loss
-        (3, 50, 20),   # Third, 50cp loss
-        (5, 100, 20),  # Fifth, 100cp loss
-        (10, 200, 20), # Tenth, 200cp loss
-    ]
-    
-    for rank, cp_loss, num_moves in test_cases:
-        weight = compute_loss_weight_from_quality(
-            rank, cp_loss, num_moves,
-            weight_type='cp_loss',
-            min_weight=0.1,
-            max_weight=2.0,
-            max_cp_loss=200
-        )
-        print(f"  Rank {rank}, CP loss {cp_loss}: weight = {weight:.3f}")

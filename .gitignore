@@ -167,6 +167,7 @@ output/
 results/
 experiments/
 runs/
+reports/
 
 # Preprocessed data
 preprocessed/

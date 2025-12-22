@@ -19,7 +19,7 @@ fi
 echo ""
 echo "Running unit tests..."
 python -m pytest tests/ -v --tb=short || {
-    echo "⚠ Some tests failed, but continuing..."
+    echo "[WARN] Some tests failed, but continuing..."
 }
 
 # Test imports
@@ -34,27 +34,27 @@ import chess
 
 # Test chess utils
 board = chess.Board()
-print(f"  ✓ Chess board created")
+print("  [OK] Chess board created")
 
 utf_board = render_board_utf(board)
-print(f"  ✓ Board rendering works")
+print("  [OK] Board rendering works")
 
 legal = get_legal_moves_uci(board)
-print(f"  ✓ Legal moves: {len(legal.split())} moves found")
+print(f"  [OK] Legal moves: {len(legal.split())} moves found")
 
 # Test move extraction
 test_response = "<think>Testing</think><uci_move>e2e4</uci_move>"
 move = extract_uci_from_response(test_response)
 assert move == "e2e4", f"Expected e2e4, got {move}"
-print(f"  ✓ Move extraction works")
+print("  [OK] Move extraction works")
 
 # Test formatting
 pos = {"fen": board.fen(), "target_move_uci": "e2e4"}
 msgs = position_to_messages(pos)
 assert "messages" in msgs
-print(f"  ✓ Position formatting works")
+print("  [OK] Position formatting works")
 
-print("\n✓ All core imports and functions working!")
+print("\n[OK] All core imports and functions working!")
 EOF
 
 # Test model loading (if transformers available)
@@ -67,13 +67,13 @@ from transformers import AutoTokenizer
 # Just test tokenizer loads (model would be too slow)
 print("Loading tokenizer...")
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B", trust_remote_code=True)
-print(f"  ✓ Tokenizer loaded: {tokenizer.__class__.__name__}")
-print(f"  ✓ Vocab size: {tokenizer.vocab_size}")
+print(f"  [OK] Tokenizer loaded: {tokenizer.__class__.__name__}")
+print(f"  [OK] Vocab size: {tokenizer.vocab_size}")
 
 if torch.cuda.is_available():
-    print(f"  ✓ CUDA available: {torch.cuda.get_device_name(0)}")
+    print(f"  [OK] CUDA available: {torch.cuda.get_device_name(0)}")
 else:
-    print(f"  ○ CUDA not available")
+    print("  [WARN] CUDA not available")
 EOF
 
 # Test Stockfish
@@ -98,13 +98,13 @@ if sf_path:
         sf.set_fen_position("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1")
         best = sf.get_best_move()
         eval_result = sf.get_evaluation()
-        print(f"  ✓ Stockfish working at {sf_path}")
-        print(f"  ✓ Best move after 1.e4: {best}")
-        print(f"  ✓ Evaluation: {eval_result}")
+        print(f"  [OK] Stockfish working at {sf_path}")
+        print(f"  [OK] Best move after 1.e4: {best}")
+        print(f"  [OK] Evaluation: {eval_result}")
     except Exception as e:
-        print(f"  ⚠ Stockfish error: {e}")
+        print(f"  [WARN] Stockfish error: {e}")
 else:
-    print("  ○ Stockfish not found (ACPL eval disabled)")
+    print("  [WARN] Stockfish not found (ACPL eval disabled)")
     print("    Install with: sudo apt install stockfish")
 EOF
 
@@ -114,4 +114,4 @@ echo "Quick test complete!"
 echo "=============================================="
 echo ""
 echo "To run full training in debug mode:"
-echo "  ./scripts/train.sh --debug"
+echo "  ./scripts/train_sft.sh --debug"

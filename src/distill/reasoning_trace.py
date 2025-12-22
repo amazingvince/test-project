@@ -2338,8 +2338,10 @@ class ReasoningTraceGenerator:
 
         shallow_cp = shallow_cps.get(cand.uci)
         shallow_wp = shallow_win.get(cand.uci)
-        best_shallow_cp = max(shallow_cps.values()) if shallow_cps else None
-        best_shallow_wp = max(shallow_win.values()) if shallow_win else None
+        cp_values = [v for v in shallow_cps.values() if v is not None]
+        wp_values = [v for v in shallow_win.values() if v is not None]
+        best_shallow_cp = max(cp_values) if cp_values else None
+        best_shallow_wp = max(wp_values) if wp_values else None
 
         trap_min_cp_swing = int(cfg.get("trap_min_cp_swing", 80))
         trap_min_wp_swing = float(cfg.get("trap_min_win_prob_swing", 0.12))

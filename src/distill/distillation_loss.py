@@ -1,22 +1,17 @@
 """
-Distillation Loss for Chess Policy Learning.
+Distillation losses and metrics used by policy distillation training.
 
-Implements forward KL divergence loss for distilling Stockfish's
-policy into an LLM, with support for soft targets and hard labels.
-
-Supports optional Liger Kernel integration for memory-efficient
-KL divergence and JSD (Jensen-Shannon Divergence) computation.
+The main entrypoint is `ChessDistillationLoss`, which computes a forward KL
+divergence between the student logits and a teacher probability distribution.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Dict, Any, Tuple
-import numpy as np
+from typing import Dict, Optional, Tuple
 
 # Try to import Liger Kernel for optimized loss computation
 try:
-    from liger_kernel.chunked_loss import LigerFusedLinearJSD
     from liger_kernel.ops.jsd import LigerJSD
     from liger_kernel.ops.kl_div import LigerKLDivLoss
     LIGER_AVAILABLE = True
@@ -109,7 +104,6 @@ class ChessDistillationLoss(nn.Module):
         student_logits: torch.Tensor,
         teacher_probs: torch.Tensor,
         hard_targets: Optional[torch.Tensor] = None,
-        mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         """
         Compute combined distillation loss.
@@ -117,14 +111,11 @@ class ChessDistillationLoss(nn.Module):
         Args:
             student_logits: Raw logits from student model [batch, vocab_size]
             teacher_probs: Soft probability distribution from Stockfish [batch, vocab_size]
-            hard_targets: Ground truth move indices [batch] (optional)
-            mask: Boolean mask for valid positions [batch] (optional)
+            hard_targets: Ground truth move indices [batch] (optional).
 
         Returns:
             Tuple of (total_loss, loss_dict with components)
         """
-        batch_size = student_logits.size(0)
-
         # Apply temperature scaling to student
         if self.temperature != 1.0:
             student_logits_scaled = student_logits / self.temperature
@@ -177,104 +168,6 @@ class ChessDistillationLoss(nn.Module):
         }
 
         return total_loss, loss_dict
-
-
-class SequenceDistillationLoss(nn.Module):
-    """
-    Distillation loss for sequence-level training (full response generation).
-    
-    This is used when the student generates a full response including
-    thinking and the move, and we want to distill knowledge at the
-    move token positions.
-    """
-    
-    def __init__(
-        self,
-        alpha: float = 0.5,
-        temperature: float = 1.0,
-        move_token_weight: float = 2.0,
-    ):
-        """
-        Initialize sequence distillation loss.
-        
-        Args:
-            alpha: Weight for soft loss
-            temperature: Temperature for softening
-            move_token_weight: Extra weight for move token positions
-        """
-        super().__init__()
-        self.alpha = alpha
-        self.temperature = temperature
-        self.move_token_weight = move_token_weight
-    
-    def forward(
-        self,
-        student_logits: torch.Tensor,
-        labels: torch.Tensor,
-        teacher_probs_at_move: Optional[torch.Tensor] = None,
-        move_positions: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute sequence-level distillation loss.
-        
-        Args:
-            student_logits: [batch, seq_len, vocab_size]
-            labels: [batch, seq_len] with -100 for ignored positions
-            teacher_probs_at_move: [batch, vocab_size] soft targets for move
-            move_positions: [batch] position of move token in sequence
-        
-        Returns:
-            Tuple of (loss, loss_dict)
-        """
-        batch_size, seq_len, vocab_size = student_logits.shape
-        device = student_logits.device
-        
-        # Standard cross-entropy loss on full sequence
-        # Flatten for cross_entropy
-        logits_flat = student_logits.view(-1, vocab_size)
-        labels_flat = labels.view(-1)
-        
-        ce_loss = F.cross_entropy(
-            logits_flat,
-            labels_flat,
-            ignore_index=-100,
-            reduction='mean'
-        )
-        
-        # If no teacher probs, just return CE loss
-        if teacher_probs_at_move is None or move_positions is None:
-            return ce_loss, {'total_loss': ce_loss.item(), 'ce_loss': ce_loss.item()}
-        
-        # Extract logits at move positions for distillation
-        # move_positions: [batch] indices into seq_len
-        batch_indices = torch.arange(batch_size, device=device)
-        move_logits = student_logits[batch_indices, move_positions]  # [batch, vocab_size]
-        
-        # Soft loss at move positions
-        move_log_probs = F.log_softmax(move_logits / self.temperature, dim=-1)
-        teacher_probs_safe = teacher_probs_at_move.clamp(min=1e-10)
-        teacher_probs_safe = teacher_probs_safe / teacher_probs_safe.sum(dim=-1, keepdim=True)
-        
-        soft_loss = F.kl_div(
-            move_log_probs,
-            teacher_probs_safe,
-            reduction='batchmean'
-        )
-        
-        if self.temperature != 1.0:
-            soft_loss = soft_loss * (self.temperature ** 2)
-        
-        # Combine
-        total_loss = (1 - self.alpha) * ce_loss + self.alpha * soft_loss
-        
-        loss_dict = {
-            'total_loss': total_loss.item(),
-            'ce_loss': ce_loss.item(),
-            'soft_loss': soft_loss.item(),
-        }
-        
-        return total_loss, loss_dict
-
 
 def create_soft_target_tensor(
     move_probs: Dict[str, float],
@@ -364,171 +257,3 @@ def compute_distillation_metrics(
             metrics['prob_on_correct'] = correct_probs.mean().item()
         
         return metrics
-
-
-class AdaptiveDistillationLoss(nn.Module):
-    """
-    Adaptive distillation loss that adjusts alpha based on move quality.
-    
-    For positions where the target move is the best move, we emphasize
-    distillation. For positions where the target is suboptimal, we
-    reduce distillation weight to avoid pushing the model toward
-    the suboptimal move.
-    """
-    
-    def __init__(
-        self,
-        base_alpha: float = 0.5,
-        alpha_for_best: float = 0.7,
-        alpha_for_bad: float = 0.2,
-        cp_loss_threshold: int = 50,
-        temperature: float = 1.0,
-    ):
-        """
-        Initialize adaptive distillation loss.
-        
-        Args:
-            base_alpha: Default alpha
-            alpha_for_best: Alpha when target is best move
-            alpha_for_bad: Alpha when target is a bad move
-            cp_loss_threshold: CP loss above which move is "bad"
-            temperature: Softmax temperature
-        """
-        super().__init__()
-        self.base_alpha = base_alpha
-        self.alpha_for_best = alpha_for_best
-        self.alpha_for_bad = alpha_for_bad
-        self.cp_loss_threshold = cp_loss_threshold
-        self.temperature = temperature
-    
-    def forward(
-        self,
-        student_logits: torch.Tensor,
-        teacher_probs: torch.Tensor,
-        hard_targets: torch.Tensor,
-        target_cp_losses: torch.Tensor,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute adaptive loss.
-        
-        Args:
-            student_logits: [batch, vocab_size]
-            teacher_probs: [batch, vocab_size]
-            hard_targets: [batch]
-            target_cp_losses: [batch] CP loss of each target move
-        
-        Returns:
-            Tuple of (loss, loss_dict)
-        """
-        batch_size = student_logits.size(0)
-        device = student_logits.device
-        
-        # Compute per-sample alpha based on move quality
-        alphas = torch.full((batch_size,), self.base_alpha, device=device)
-        
-        # Best moves get high alpha (emphasize distillation)
-        best_mask = target_cp_losses == 0
-        alphas[best_mask] = self.alpha_for_best
-        
-        # Bad moves get low alpha (reduce distillation)
-        bad_mask = target_cp_losses > self.cp_loss_threshold
-        alphas[bad_mask] = self.alpha_for_bad
-        
-        # Compute losses per sample
-        student_log_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
-        teacher_probs_safe = teacher_probs.clamp(min=1e-10)
-        teacher_probs_safe = teacher_probs_safe / teacher_probs_safe.sum(dim=-1, keepdim=True)
-        
-        # Per-sample KL divergence
-        soft_losses = F.kl_div(
-            student_log_probs,
-            teacher_probs_safe,
-            reduction='none'
-        ).sum(dim=-1)  # [batch]
-        
-        if self.temperature != 1.0:
-            soft_losses = soft_losses * (self.temperature ** 2)
-        
-        # Per-sample CE loss
-        hard_losses = F.cross_entropy(
-            student_logits,
-            hard_targets,
-            reduction='none'
-        )  # [batch]
-        
-        # Combine with per-sample alpha
-        total_losses = alphas * soft_losses + (1 - alphas) * hard_losses
-        total_loss = total_losses.mean()
-        
-        loss_dict = {
-            'total_loss': total_loss.item(),
-            'soft_loss': soft_losses.mean().item(),
-            'hard_loss': hard_losses.mean().item(),
-            'mean_alpha': alphas.mean().item(),
-            'best_move_ratio': best_mask.float().mean().item(),
-            'bad_move_ratio': bad_mask.float().mean().item(),
-        }
-        
-        return total_loss, loss_dict
-
-
-if __name__ == "__main__":
-    # Test the loss functions
-    print("Testing distillation losses...")
-    print(f"Liger Kernel available: {LIGER_AVAILABLE}")
-
-    batch_size = 4
-    vocab_size = 1000
-
-    # Create dummy data
-    student_logits = torch.randn(batch_size, vocab_size)
-    teacher_probs = F.softmax(torch.randn(batch_size, vocab_size) * 2, dim=-1)
-    hard_targets = torch.randint(0, vocab_size, (batch_size,))
-
-    # Test basic KL loss (PyTorch)
-    print("\n=== ChessDistillationLoss (KL, PyTorch) ===")
-    loss_fn = ChessDistillationLoss(alpha=0.5, temperature=1.0, use_liger=False, loss_type="kl")
-    loss, loss_dict = loss_fn(student_logits, teacher_probs, hard_targets)
-    print(f"Total loss: {loss.item():.4f}")
-    print(f"Loss dict: {loss_dict}")
-
-    # Test JSD loss (fallback)
-    print("\n=== ChessDistillationLoss (JSD, fallback) ===")
-    loss_fn_jsd = ChessDistillationLoss(alpha=0.5, temperature=1.0, use_liger=False, loss_type="jsd")
-    loss_jsd, loss_dict_jsd = loss_fn_jsd(student_logits, teacher_probs, hard_targets)
-    print(f"Total loss: {loss_jsd.item():.4f}")
-    print(f"Loss dict: {loss_dict_jsd}")
-
-    # Test Liger KL if available
-    if LIGER_AVAILABLE:
-        print("\n=== ChessDistillationLoss (KL, Liger) ===")
-        loss_fn_liger = ChessDistillationLoss(alpha=0.5, temperature=1.0, use_liger=True, loss_type="kl")
-        loss_liger, loss_dict_liger = loss_fn_liger(student_logits, teacher_probs, hard_targets)
-        print(f"Total loss: {loss_liger.item():.4f}")
-        print(f"Loss dict: {loss_dict_liger}")
-
-        print("\n=== ChessDistillationLoss (JSD, Liger) ===")
-        loss_fn_liger_jsd = ChessDistillationLoss(alpha=0.5, temperature=1.0, use_liger=True, loss_type="jsd")
-        loss_liger_jsd, loss_dict_liger_jsd = loss_fn_liger_jsd(student_logits, teacher_probs, hard_targets)
-        print(f"Total loss: {loss_liger_jsd.item():.4f}")
-        print(f"Loss dict: {loss_dict_liger_jsd}")
-
-    # Test with different alphas
-    print("\n=== Alpha sweep ===")
-    for alpha in [0.0, 0.25, 0.5, 0.75, 1.0]:
-        loss_fn = ChessDistillationLoss(alpha=alpha)
-        loss, _ = loss_fn(student_logits, teacher_probs, hard_targets)
-        print(f"Alpha={alpha}: loss={loss.item():.4f}")
-
-    # Test metrics
-    print("\n=== Distillation Metrics ===")
-    metrics = compute_distillation_metrics(student_logits, teacher_probs, hard_targets)
-    for k, v in metrics.items():
-        print(f"  {k}: {v:.4f}")
-
-    # Test adaptive loss
-    print("\n=== AdaptiveDistillationLoss ===")
-    adaptive_loss = AdaptiveDistillationLoss()
-    cp_losses = torch.tensor([0, 20, 100, 300], dtype=torch.float)
-    loss, loss_dict = adaptive_loss(student_logits, teacher_probs, hard_targets, cp_losses)
-    print(f"Adaptive loss dict: {loss_dict}")
