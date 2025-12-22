@@ -247,11 +247,11 @@ reasoning_trace:
   perpetual_max_plies: 6
   max_motifs_per_candidate: 1
   include_candidate_pv: true
-  candidate_pv_prob: 0.4
+  candidate_pv_prob: 0.6
   candidate_pv_max_len: 4
   candidate_question_prob: 0.35
   include_static_eval_notes: true
-  static_eval_prob: 0.25
+  static_eval_prob: 0.4
   max_static_eval_notes: 2
   static_eval_include_material: true
   static_eval_include_pawn_structure: true
@@ -290,9 +290,13 @@ reasoning_trace:
   dead_end_prob: 0.4
   comparison_prob: 0.5
   style_weights:
-    thorough: 0.6
-    concise: 0.25
-    tactical: 0.15
+    thorough: 0.40
+    concise: 0.15
+    tactical: 0.10
+    quick: 0.10
+    problem_focused: 0.10
+    intuition: 0.08
+    comparison_focused: 0.07
 
   # Source-aware language tweaks
   source_overrides:

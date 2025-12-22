@@ -45,6 +45,488 @@ WEAK_SQUARE_CANDIDATES = [
     chess.C4, chess.F4, chess.C5, chess.F5,
 ]
 
+# Style configuration for trace generation variety
+STYLE_CONFIGS = {
+    "thorough": {
+        "default_weight": 0.40,
+        "target_length": "long",
+    },
+    "concise": {
+        "default_weight": 0.15,
+        "target_length": "medium",
+    },
+    "tactical": {
+        "default_weight": 0.10,
+        "target_length": "medium",
+    },
+    "quick": {
+        "default_weight": 0.10,
+        "target_length": "short",
+    },
+    "problem_focused": {
+        "default_weight": 0.10,
+        "target_length": "medium",
+    },
+    "intuition": {
+        "default_weight": 0.08,
+        "target_length": "medium",
+    },
+    "comparison_focused": {
+        "default_weight": 0.07,
+        "target_length": "medium",
+    },
+}
+
+# Expanded phrase library for variety in trace generation
+PHRASE_LIBRARY = {
+    "orientation_starters": [
+        "Let me look at this position.",
+        "First impression:",
+        "At a glance:",
+        "What's going on here?",
+        "Looking at the board:",
+        "Examining this position:",
+        "Starting with the basics:",
+        "What do we have here?",
+        "Taking stock of the position:",
+        "Let me assess this:",
+    ],
+    "candidate_intros": [
+        "Moves to consider:",
+        "Candidates:",
+        "The main candidates are:",
+        "A few moves catch my eye:",
+        "The candidates that stand out are:",
+        "Several options here:",
+        "What deserves attention:",
+        "The moves worth checking:",
+        "Options on the table:",
+        "Let me consider:",
+    ],
+    "analysis_starters": [
+        "Looking at {move},",
+        "For {move},",
+        "Considering {move},",
+        "What about {move}?",
+        "Does {move} work here?",
+        "How about {move}?",
+        "Checking {move}:",
+        "The idea with {move}:",
+        "If we try {move},",
+        "Examining {move}:",
+    ],
+    "uncertainty_phrases": [
+        "I'm not entirely sure, but",
+        "This seems to",
+        "My instinct says",
+        "This feels like",
+        "It looks like",
+        "Probably",
+        "I think",
+        "This might",
+        "Hard to say for certain, but",
+        "It appears that",
+    ],
+    "reconsideration_phrases": [
+        "Actually, looking again...",
+        "Wait, I missed...",
+        "Hmm, but...",
+        "On second thought...",
+        "That changes things...",
+        "I need to reconsider...",
+        "Hold on...",
+        "Actually, what about...",
+        "Let me think again...",
+        "Reconsidering this...",
+    ],
+    "dead_end_phrases": [
+        "This doesn't work because",
+        "I looked at {move} but it fails to",
+        "Unfortunately, this runs into",
+        "This would be nice, but",
+        "The problem is",
+        "{move} looked promising but",
+        "At first I liked {move}, but",
+        "This falls short because",
+        "Doesn't quite get there.",
+        "Almost, but not quite.",
+        "Close but no cigar.",
+        "{move} has issues.",
+        "Can't make it work.",
+        "Tried this, didn't pan out.",
+        "Not as good as it looks.",
+    ],
+    "comparison_phrases": [
+        "Compared to {move}",
+        "Unlike {move}, this",
+        "The difference is",
+        "While {move1} does X, {move2} achieves Y",
+        "Both moves have merit, but",
+        "Weighing {move1} against {move2}",
+        "The trade-off is",
+        "Between these options,",
+    ],
+    "conclusion_intros": [
+        "After considering everything,",
+        "Taking this all into account,",
+        "Given these factors,",
+        "Based on this analysis,",
+        "Having explored the options,",
+        "The analysis points to",
+        "All things considered,",
+        "Weighing everything up,",
+        "After working through this,",
+        "Looking at the full picture,",
+        "This leads me to",
+        "The conclusion is clear:",
+        "Everything points to",
+        "My choice here is",
+        "The right move is",
+    ],
+    "conclusion_formats": [
+        "{move} is the move.",
+        "{move} is the answer.",
+        "{move} stands out as best.",
+        "I'm playing {move}.",
+        "going with {move}.",
+        "{move} is what I'd play.",
+        "{move} gets the nod.",
+        "{move} is the call.",
+        "it has to be {move}.",
+        "{move} is the pick.",
+        "{move} is clearly best.",
+        "the move is {move}.",
+        "{move} wins out.",
+        "{move} is the right choice.",
+        "{move} makes the most sense.",
+    ],
+    "quality_excellent": [
+        "This looks very strong.",
+        "Clearly the best option.",
+        "This is the move.",
+        "Definitely the right choice.",
+        "This stands out.",
+        "Excellent choice here.",
+        "A clear winner.",
+        "Nothing else comes close.",
+        "The standout candidate.",
+        "This has to be it.",
+        "No real competition here.",
+        "The obvious choice.",
+    ],
+    "quality_good": [
+        "This seems promising.",
+        "Looks good.",
+        "A solid choice.",
+        "This works well.",
+        "Reasonable move.",
+        "This looks fine.",
+        "Sensible option.",
+        "Can't go wrong here.",
+        "A natural move.",
+        "This holds up.",
+        "Reliable choice.",
+        "Makes sense.",
+    ],
+    "quality_playable": [
+        "About equal.",
+        "Playable.",
+        "Reasonable.",
+        "This keeps the balance.",
+        "Not bad.",
+        "Acceptable.",
+        "Nothing wrong with this.",
+        "Fair enough.",
+        "Decent.",
+        "Can be considered.",
+        "Within the normal range.",
+        "OK move.",
+    ],
+    "quality_dubious": [
+        "Not so clear.",
+        "Has some problems.",
+        "Risky.",
+        "Questionable.",
+        "This seems off.",
+        "Not convincing.",
+        "A bit suspect.",
+        "Probably inaccurate.",
+        "May not hold up.",
+        "There are issues.",
+        "Looks shaky.",
+        "Second best at most.",
+    ],
+    "quick_ideas": [
+        "active",
+        "developing",
+        "central",
+        "flexible",
+        "solid",
+        "natural",
+        "safe",
+        "dynamic",
+        "aggressive",
+        "positional",
+        "prophylactic",
+        "tempo",
+        "space",
+        "coordination",
+        "pressure",
+    ],
+    "problem_intros": [
+        "The challenge here:",
+        "The main problem is",
+        "What needs solving?",
+        "The key question:",
+        "The issue is",
+        "What's the task?",
+    ],
+    "failed_attempt_intros": [
+        "First thought: {move}.",
+        "What about {move}?",
+        "Trying {move} first.",
+        "My first instinct: {move}.",
+        "Initial idea: {move}.",
+    ],
+    "failed_attempt_second": [
+        "Second attempt: {move}.",
+        "Maybe {move} instead?",
+        "How about {move}?",
+        "Another option: {move}.",
+        "Alternatively, {move}.",
+    ],
+    "failure_reasons_bad": [
+        "But this loses material after a tactical shot.",
+        "This runs into a strong reply and falls apart.",
+        "Unfortunately this has a concrete refutation.",
+        "But there's a problem with this.",
+        "This doesn't quite work.",
+    ],
+    "failure_reasons_ok": [
+        "This is playable but not convincing.",
+        "It works but doesn't solve the real problem.",
+        "Close, but there's something better.",
+        "Decent, but not optimal.",
+        "Not bad, but we can improve.",
+    ],
+    "failure_reasons_close": [
+        "This is decent but not the sharpest.",
+        "Reasonable, but we can do better.",
+        "Solid, though not optimal.",
+        "Fine, but there's more.",
+        "Good, but not quite right.",
+    ],
+    "solution_intros": [
+        "The solution: {move}.",
+        "Here's what works: {move}.",
+        "Finally, {move} does the job.",
+        "The answer is {move}.",
+        "What works: {move}.",
+        "{move} solves it.",
+    ],
+    "intuition_first_impressions": [
+        "Gut feeling: this position has some tension.",
+        "My instinct says there should be something active here.",
+        "First impression: this looks like a key moment.",
+        "This feels like a critical position.",
+        "Something important is happening here.",
+        "Instinct tells me this matters.",
+    ],
+    "intuition_preference_intros": [
+        "The move that jumps out is {move}. Let me verify this.",
+        "My first instinct says {move}. But let's check the details.",
+        "{move} catches my eye. Time to see if it holds up.",
+        "Initially drawn to {move}. Let me confirm.",
+        "{move} seems right. Worth checking.",
+    ],
+    "intuition_verify": [
+        "Checking {move} concretely...",
+        "Let me verify {move}.",
+        "Running through {move} in my head...",
+        "Testing {move}...",
+        "Looking at {move} more closely...",
+    ],
+    "intuition_confirmed": [
+        "Intuition confirmed. {move} is the right call.",
+        "The verification backs up the gut feeling. {move} it is.",
+        "My first instinct was right. Playing {move}.",
+        "Yes, {move} holds up.",
+        "Confirmed: {move} works.",
+    ],
+    "intuition_adjusted": [
+        "Actually, after checking, {move} is better than I first thought.",
+        "Adjusting my initial read. {move} is the move.",
+        "The concrete lines favor {move} over my first choice.",
+        "Changed my mind. {move} is right.",
+        "On reflection, {move} is stronger.",
+    ],
+    "comparison_frames_three": [
+        "The question: {m1}, {m2}, or {m3}?",
+        "Three main options: {m1}, {m2}, {m3}. Which one?",
+        "Deciding between {m1}, {m2}, and {m3}.",
+        "Main candidates: {m1}, {m2}, {m3}.",
+    ],
+    "comparison_frames_two": [
+        "Two main choices: {m1} or {m2}.",
+        "The decision comes down to {m1} versus {m2}.",
+        "Which is better: {m1} or {m2}?",
+        "{m1} vs {m2}.",
+    ],
+    "comparison_pros_strong": [
+        "strong initiative",
+        "good chances",
+        "active",
+        "aggressive",
+        "forcing",
+    ],
+    "comparison_pros_solid": [
+        "solid",
+        "safe",
+        "flexible",
+        "reliable",
+        "sound",
+    ],
+    "comparison_pros_fighting": [
+        "fighting",
+        "creates complications",
+        "ambitious",
+        "interesting",
+        "dynamic",
+    ],
+    "comparison_cons_best": [
+        "hard to see downsides",
+        "minor cons at most",
+        "looks clean",
+        "no real problems",
+    ],
+    "comparison_cons_inferior": [
+        "less accurate",
+        "misses the point",
+        "not quite right",
+        "has issues",
+    ],
+    "comparison_cons_close": [
+        "slightly inferior",
+        "second best",
+        "close but not optimal",
+        "nearly as good",
+    ],
+    "comparison_cons_marginal": [
+        "very close call",
+        "nearly equivalent",
+        "marginal difference",
+        "hard to distinguish",
+    ],
+    "comparison_key_difference": [
+        "What makes {move} better: it's more forcing.",
+        "The key: {move} wins material or forces a favorable exchange.",
+        "{move} gives a clear edge that the others don't match.",
+        "{move} is more forcing and keeps the initiative.",
+        "The precision of {move} edges out the alternatives.",
+        "{move} solves more problems at once.",
+        "{move} is simply more accurate.",
+    ],
+    "comparison_conclusions": [
+        "The choice: {move}.",
+        "Going with {move}.",
+        "{move} wins the comparison.",
+        "Picking {move}.",
+        "{move} is the one.",
+    ],
+    # Move-type specific phrases
+    "capture_phrases": [
+        "Winning material.",
+        "Captures and gains.",
+        "Takes the piece.",
+        "Material gain.",
+        "A good exchange.",
+        "Picks up material.",
+        "Cashes in.",
+        "Wins the piece.",
+        "Collects material.",
+        "A profitable trade.",
+        "Clears the way.",
+        "Removes a defender.",
+    ],
+    "quiet_move_phrases": [
+        "Improving the position.",
+        "Building up slowly.",
+        "A patient move.",
+        "Strengthening the setup.",
+        "No hurry.",
+        "Preparing something.",
+        "Subtle improvement.",
+        "Quiet but strong.",
+        "Getting ready.",
+        "A calm approach.",
+        "Maneuvering.",
+        "Repositioning.",
+    ],
+    "check_phrases": [
+        "Check!",
+        "Giving check.",
+        "Forces the king to move.",
+        "Attacks the king.",
+        "With check.",
+        "The king is hit.",
+        "Harassing the king.",
+        "Keeping pressure on the king.",
+        "Driving the king.",
+        "The king must respond.",
+        "No time to breathe.",
+        "Relentless pressure.",
+    ],
+    # Emotional/aesthetic phrases
+    "beautiful_sacrifice": [
+        "A brilliant sacrifice.",
+        "A stunning piece sacrifice.",
+        "An aesthetic sacrifice that opens lines.",
+        "A gorgeous material investment.",
+        "Sacrificing material for overwhelming compensation.",
+        "A beautiful exchange sacrifice.",
+        "Material for the initiative - a classic trade.",
+        "A spectacular sacrifice.",
+    ],
+    "surprising_quiet_move": [
+        "A quiet move when tactics were expected.",
+        "Surprising simplicity.",
+        "An unexpected calm response.",
+        "A subtle but strong move.",
+        "Quiet but devastating.",
+        "Not the obvious choice, but the right one.",
+        "A refined, quiet solution.",
+        "Positionally perfect.",
+    ],
+    "clever_defense": [
+        "A resourceful defense.",
+        "A clever defensive idea.",
+        "An ingenious defensive resource.",
+        "Defensive brilliance.",
+        "A surprisingly solid defense.",
+        "Finding the only move that holds.",
+        "A tricky defensive setup.",
+        "Defending with precision.",
+    ],
+    "tempo_phrases": [
+        "Gains tempo by attacking.",
+        "Develops with a threat.",
+        "Forcing the opponent to respond.",
+        "No time to waste - attacks immediately.",
+        "Developing while creating threats.",
+        "A move with initiative.",
+        "Active and aggressive.",
+        "Keeps up the pressure.",
+    ],
+    "coordination_phrases": [
+        "The pieces work together here.",
+        "Good piece coordination.",
+        "The pieces are harmoniously placed.",
+        "Everything is connected.",
+        "The army works as one.",
+        "Pieces supporting each other.",
+    ],
+}
+
 
 @dataclass
 class OpeningInfo:
@@ -289,6 +771,25 @@ class ReasoningTraceGenerator:
         style = self._select_style(cfg, source, rng)
         notation = cfg.get("move_notation", "uci")
 
+        # Dispatch to new style-specific generators
+        if style == "quick":
+            return self._generate_quick_style(
+                board, candidates, best_analysis, analysis, rng, cfg, notation
+            )
+        elif style == "problem_focused":
+            return self._generate_problem_focused_style(
+                board, candidates, best_analysis, analysis, rng, cfg, notation
+            )
+        elif style == "intuition":
+            return self._generate_intuition_style(
+                board, candidates, best_analysis, analysis, rng, cfg, notation
+            )
+        elif style == "comparison_focused":
+            return self._generate_comparison_style(
+                board, candidates, best_analysis, analysis, rng, cfg, notation
+            )
+
+        # Continue with existing flow for thorough/concise/tactical styles
         orientation = self._orientation_line(
             board,
             opening_info,
@@ -938,12 +1439,9 @@ class ReasoningTraceGenerator:
             rng,
             style,
         )
-        intro = rng.choice([
-            "After considering everything,",
-            "Taking this all into account,",
-            "Given these factors,",
-        ])
-        conclusion = f"{intro} {best_move_label} is the move."
+        intro = rng.choice(PHRASE_LIBRARY["conclusion_intros"])
+        format_template = rng.choice(PHRASE_LIBRARY["conclusion_formats"])
+        conclusion = f"{intro} {format_template.format(move=best_move_label)}"
         pv_line = ""
         pruned = False
         if reason:
@@ -969,6 +1467,476 @@ class ReasoningTraceGenerator:
         if pv_line:
             return f"{conclusion} {reason}\n\n{pv_line}"
         return f"{conclusion} {reason}"
+
+    # =========================================================================
+    # NEW STYLE GENERATORS
+    # =========================================================================
+
+    def _generate_quick_style(
+        self,
+        board: chess.Board,
+        candidates: List[Any],
+        best_analysis: Optional[Any],
+        analysis: Any,
+        rng: random.Random,
+        cfg: Dict[str, Any],
+        notation: str,
+    ) -> str:
+        """Generate a very brief 2-3 sentence trace."""
+        side = "White" if board.turn == chess.WHITE else "Black"
+        phase = self._position_phase(board)
+
+        # Sentence 1: Brief position description
+        opener = rng.choice([
+            f"{phase.title()} position. {side} to move.",
+            f"{side} to move in this {phase}.",
+            f"Quick look: {phase}, {side}'s turn.",
+            f"{phase.title()}. {side} is up.",
+            f"Simple {phase} situation. {side} to play.",
+        ])
+
+        # Sentence 2: Quick candidates with one-line ideas
+        if candidates:
+            top_moves = candidates[:3]
+            move_summaries = []
+            for cand in top_moves:
+                label = self._move_label(cand, notation)
+                idea = self._quick_idea(board, cand, rng)
+                move_summaries.append(f"{label} ({idea})")
+            candidates_text = rng.choice([
+                f"Main ideas: {', '.join(move_summaries)}.",
+                f"Options: {', '.join(move_summaries)}.",
+                f"Candidates: {', '.join(move_summaries)}.",
+            ])
+        else:
+            candidates_text = "Looking for the best continuation."
+
+        # Sentence 3: Quick conclusion with optional motif
+        if best_analysis:
+            best_label = self._move_label(best_analysis, notation)
+            motif_text = ""
+            if cfg.get("include_motifs", False):
+                try:
+                    move = chess.Move.from_uci(best_analysis.uci)
+                    motifs = self._detect_candidate_motifs(board, move, best_analysis, cfg)
+                    if motifs:
+                        motif_text = f" ({motifs[0]})"
+                except Exception:
+                    pass
+            conclusion = rng.choice([
+                f"Best: {best_label}{motif_text}.",
+                f"Play {best_label}{motif_text}.",
+                f"The move is {best_label}{motif_text}.",
+                f"Go with {best_label}{motif_text}.",
+                f"{best_label} is right{motif_text}.",
+            ])
+        else:
+            conclusion = "Solid development is key."
+
+        return f"{opener} {candidates_text} {conclusion}"
+
+    def _quick_idea(self, board: chess.Board, cand: Any, rng: random.Random) -> str:
+        """Generate a 1-3 word idea for quick style."""
+        try:
+            move = chess.Move.from_uci(cand.uci)
+        except Exception:
+            return rng.choice(PHRASE_LIBRARY["quick_ideas"])
+
+        if board.gives_check(move):
+            return rng.choice(["check", "checks", "gives check"])
+        if board.is_capture(move):
+            return rng.choice(["captures", "takes", "wins material"])
+        if board.is_castling(move):
+            return rng.choice(["castles", "safety", "king safety"])
+        if move.promotion:
+            return rng.choice(["promotes", "queening", "promotion"])
+
+        return rng.choice(PHRASE_LIBRARY["quick_ideas"])
+
+    def _move_type_phrase(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        rng: random.Random,
+    ) -> str:
+        """Get a descriptive phrase based on move type (capture, check, or quiet)."""
+        if board.gives_check(move):
+            return rng.choice(PHRASE_LIBRARY["check_phrases"])
+        if board.is_capture(move):
+            return rng.choice(PHRASE_LIBRARY["capture_phrases"])
+        return rng.choice(PHRASE_LIBRARY["quiet_move_phrases"])
+
+    def _generate_problem_focused_style(
+        self,
+        board: chess.Board,
+        candidates: List[Any],
+        best_analysis: Optional[Any],
+        analysis: Any,
+        rng: random.Random,
+        cfg: Dict[str, Any],
+        notation: str,
+    ) -> str:
+        """Generate trace as: problem -> failed attempts -> solution."""
+        sections = []
+
+        # 1. Problem Identification
+        problem = self._identify_problem(board, best_analysis, rng)
+        sections.append(problem)
+
+        # 2. Failed Attempts (show 1-2 inferior moves)
+        if len(candidates) >= 2:
+            failed = self._failed_attempts(board, candidates, best_analysis, rng, notation)
+            if failed:
+                sections.append(failed)
+
+        # 3. Successful Attempt (with optional motif)
+        if best_analysis:
+            success = self._successful_attempt(board, best_analysis, rng, notation, cfg)
+            sections.append(success)
+
+        # 4. Brief Conclusion
+        if best_analysis:
+            best_label = self._move_label(best_analysis, notation)
+            conclusion = rng.choice([
+                f"Therefore, {best_label} solves the position.",
+                f"The answer is {best_label}.",
+                f"{best_label} is the key move that addresses everything.",
+                f"So {best_label} is correct.",
+                f"{best_label} handles the situation.",
+            ])
+            sections.append(conclusion)
+
+        return "\n\n".join(sections)
+
+    def _identify_problem(
+        self,
+        board: chess.Board,
+        best_analysis: Optional[Any],
+        rng: random.Random,
+    ) -> str:
+        """Identify the main challenge in the position."""
+        problems = []
+
+        if board.is_check():
+            problems.append("must escape check")
+
+        hanging = self._find_hanging_pieces_for_color(board, board.turn, 1)
+        if hanging:
+            piece, square = hanging[0]
+            name = PIECE_NAMES.get(piece.piece_type, "piece")
+            problems.append(f"the {name} on {chess.square_name(square)} is hanging")
+
+        if self._is_exposed_king(board, board.turn):
+            problems.append("king safety is concerning")
+
+        # Check for opponent threats
+        opp_checks = self._count_opponent_checks(board)
+        if opp_checks > 0:
+            problems.append("opponent has checking ideas")
+
+        if not problems:
+            problems.append("finding the most active continuation")
+
+        problem_text = problems[0] if len(problems) == 1 else " and ".join(problems[:2])
+
+        intro = rng.choice(PHRASE_LIBRARY["problem_intros"])
+        return f"{intro} {problem_text}."
+
+    def _count_opponent_checks(self, board: chess.Board) -> int:
+        """Count how many checking moves opponent has."""
+        opp_board = board.copy()
+        opp_board.turn = not board.turn
+        return sum(1 for move in opp_board.legal_moves if opp_board.gives_check(move))
+
+    def _failed_attempts(
+        self,
+        board: chess.Board,
+        candidates: List[Any],
+        best_analysis: Optional[Any],
+        rng: random.Random,
+        notation: str,
+    ) -> str:
+        """Show 1-2 moves that don't work and why."""
+        best_uci = best_analysis.uci if best_analysis else ""
+        inferior = [c for c in candidates if c.uci != best_uci]
+
+        if not inferior:
+            return ""
+
+        attempts = []
+        for i, cand in enumerate(inferior[:2]):
+            label = self._move_label(cand, notation)
+
+            if i == 0:
+                prefix = rng.choice(PHRASE_LIBRARY["failed_attempt_intros"]).format(move=label)
+            else:
+                prefix = rng.choice(PHRASE_LIBRARY["failed_attempt_second"]).format(move=label)
+
+            failure_reason = self._why_move_fails(cand, rng)
+            attempts.append(f"{prefix} {failure_reason}")
+
+        return " ".join(attempts)
+
+    def _why_move_fails(self, cand: Any, rng: random.Random) -> str:
+        """Generate reason why a move doesn't work."""
+        win_prob = getattr(cand, "win_probability", 0.5)
+
+        if win_prob < 0.35:
+            return rng.choice(PHRASE_LIBRARY["failure_reasons_bad"])
+        elif win_prob < 0.45:
+            return rng.choice(PHRASE_LIBRARY["failure_reasons_ok"])
+        else:
+            return rng.choice(PHRASE_LIBRARY["failure_reasons_close"])
+
+    def _successful_attempt(
+        self,
+        board: chess.Board,
+        best_analysis: Any,
+        rng: random.Random,
+        notation: str,
+        cfg: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Show the move that works and why."""
+        cfg = cfg or {}
+        label = self._move_label(best_analysis, notation)
+
+        try:
+            move = chess.Move.from_uci(best_analysis.uci)
+            features = self._move_features(board, move)
+        except Exception:
+            move = None
+            features = []
+
+        # Check for motifs
+        motif_text = ""
+        if cfg.get("include_motifs", False) and move is not None:
+            try:
+                motifs = self._detect_candidate_motifs(board, move, best_analysis, cfg)
+                if motifs:
+                    motif_text = f" It's a {motifs[0]}."
+            except Exception:
+                pass
+
+        # Generate reason based on features or move type
+        if features:
+            feature_text = ", ".join(features[:2])
+            reason = f"It {feature_text}."
+        elif move is not None:
+            # Use move-type specific phrase
+            reason = self._move_type_phrase(board, move, rng)
+        else:
+            reason = rng.choice([
+                "It addresses all the key concerns.",
+                "This handles everything cleanly.",
+                "It solves the position's demands.",
+                "This is the most accurate.",
+                "It keeps things under control.",
+            ])
+
+        intro = rng.choice(PHRASE_LIBRARY["solution_intros"]).format(move=label)
+        return f"{intro}{motif_text} {reason}"
+
+    def _generate_intuition_style(
+        self,
+        board: chess.Board,
+        candidates: List[Any],
+        best_analysis: Optional[Any],
+        analysis: Any,
+        rng: random.Random,
+        cfg: Dict[str, Any],
+        notation: str,
+    ) -> str:
+        """Generate trace as: gut feeling -> verification -> conclusion."""
+        sections = []
+
+        # 1. First Impression / Gut Feeling
+        first_impression = rng.choice(PHRASE_LIBRARY["intuition_first_impressions"])
+        sections.append(f"First impression: {first_impression}")
+
+        # 2. Initial Move Preference (may or may not be best)
+        initial_guess_label = ""
+        if candidates:
+            # Sometimes pick the best, sometimes a close second
+            if rng.random() < 0.7 and best_analysis:
+                guess = best_analysis
+            else:
+                guess = rng.choice(candidates)
+            initial_guess_label = self._move_label(guess, notation)
+            preference = rng.choice(PHRASE_LIBRARY["intuition_preference_intros"]).format(
+                move=initial_guess_label
+            )
+            sections.append(preference)
+
+        # 3. Verification with Concrete Lines and optional motif
+        if best_analysis:
+            best_label = self._move_label(best_analysis, notation)
+            verify_intro = rng.choice(PHRASE_LIBRARY["intuition_verify"]).format(move=best_label)
+
+            pv_text = ""
+            if cfg.get("include_pv", True):
+                max_len = min(cfg.get("max_pv_length", 8), 5)
+                pv_uci, _ = self._pv_line_uci(board, analysis, max_len, cfg)
+                if pv_uci:
+                    pv_text = f" The line goes: {pv_uci}."
+
+            motif_text = ""
+            if cfg.get("include_motifs", False):
+                try:
+                    move = chess.Move.from_uci(best_analysis.uci)
+                    motifs = self._detect_candidate_motifs(board, move, best_analysis, cfg)
+                    if motifs:
+                        motif_text = f" This is a {motifs[0]}."
+                except Exception:
+                    pass
+
+            verification = f"{verify_intro}{pv_text}{motif_text} This looks sound."
+            sections.append(verification)
+
+        # 4. Confirmation or Adjustment
+        if best_analysis:
+            best_label = self._move_label(best_analysis, notation)
+            # Check if initial preference matched
+            was_correct = initial_guess_label == best_label
+
+            if was_correct:
+                conclusion = rng.choice(PHRASE_LIBRARY["intuition_confirmed"]).format(
+                    move=best_label
+                )
+            else:
+                conclusion = rng.choice(PHRASE_LIBRARY["intuition_adjusted"]).format(
+                    move=best_label
+                )
+            sections.append(conclusion)
+
+        return "\n\n".join(sections)
+
+    def _generate_comparison_style(
+        self,
+        board: chess.Board,
+        candidates: List[Any],
+        best_analysis: Optional[Any],
+        analysis: Any,
+        rng: random.Random,
+        cfg: Dict[str, Any],
+        notation: str,
+    ) -> str:
+        """Generate trace framed as comparison between candidates."""
+        if len(candidates) < 2:
+            # Fall back to quick style if not enough candidates
+            return self._generate_quick_style(
+                board, candidates, best_analysis, analysis, rng, cfg, notation
+            )
+
+        sections = []
+
+        # 1. Frame the Decision
+        frame = self._frame_decision(candidates, rng, notation)
+        sections.append(frame)
+
+        # 2. Side by Side Comparison
+        comparison = self._side_by_side(candidates[:3], best_analysis, rng, notation)
+        sections.append(comparison)
+
+        # 3. What Makes One Better (with optional motif)
+        if best_analysis:
+            differentiator = self._key_difference(best_analysis, rng, notation)
+            if cfg.get("include_motifs", False):
+                try:
+                    move = chess.Move.from_uci(best_analysis.uci)
+                    motifs = self._detect_candidate_motifs(board, move, best_analysis, cfg)
+                    if motifs:
+                        differentiator += f" (a {motifs[0]})"
+                except Exception:
+                    pass
+            sections.append(differentiator)
+
+        # 4. Final Choice
+        if best_analysis:
+            label = self._move_label(best_analysis, notation)
+            conclusion = rng.choice(PHRASE_LIBRARY["comparison_conclusions"]).format(move=label)
+            sections.append(conclusion)
+
+        return "\n\n".join(sections)
+
+    def _frame_decision(
+        self,
+        candidates: List[Any],
+        rng: random.Random,
+        notation: str,
+    ) -> str:
+        """Frame the main decision between candidates."""
+        if len(candidates) >= 3:
+            labels = [self._move_label(c, notation) for c in candidates[:3]]
+            template = rng.choice(PHRASE_LIBRARY["comparison_frames_three"])
+            return template.format(m1=labels[0], m2=labels[1], m3=labels[2])
+        else:
+            labels = [self._move_label(c, notation) for c in candidates[:2]]
+            template = rng.choice(PHRASE_LIBRARY["comparison_frames_two"])
+            return template.format(m1=labels[0], m2=labels[1])
+
+    def _side_by_side(
+        self,
+        candidates: List[Any],
+        best_analysis: Optional[Any],
+        rng: random.Random,
+        notation: str,
+    ) -> str:
+        """Generate side-by-side pros/cons for each candidate."""
+        comparisons = []
+
+        for cand in candidates:
+            label = self._move_label(cand, notation)
+            pros = self._get_pros(cand, rng)
+            cons = self._get_cons(cand, best_analysis, rng)
+            comparisons.append(f"{label}: {pros} / {cons}")
+
+        return "\n".join(comparisons)
+
+    def _get_pros(self, cand: Any, rng: random.Random) -> str:
+        """Generate pros for a move."""
+        win_prob = getattr(cand, "win_probability", 0.5)
+
+        if win_prob > 0.55:
+            return rng.choice(PHRASE_LIBRARY["comparison_pros_strong"])
+        elif win_prob > 0.45:
+            return rng.choice(PHRASE_LIBRARY["comparison_pros_solid"])
+        else:
+            return rng.choice(PHRASE_LIBRARY["comparison_pros_fighting"])
+
+    def _get_cons(
+        self,
+        cand: Any,
+        best_analysis: Optional[Any],
+        rng: random.Random,
+    ) -> str:
+        """Generate cons for a move."""
+        if best_analysis and cand.uci == best_analysis.uci:
+            return rng.choice(PHRASE_LIBRARY["comparison_cons_best"])
+
+        win_prob = getattr(cand, "win_probability", 0.5)
+        best_prob = getattr(best_analysis, "win_probability", 0.5) if best_analysis else 0.5
+
+        if win_prob < best_prob - 0.1:
+            return rng.choice(PHRASE_LIBRARY["comparison_cons_inferior"])
+        elif win_prob < best_prob - 0.05:
+            return rng.choice(PHRASE_LIBRARY["comparison_cons_close"])
+        else:
+            return rng.choice(PHRASE_LIBRARY["comparison_cons_marginal"])
+
+    def _key_difference(
+        self,
+        best_analysis: Any,
+        rng: random.Random,
+        notation: str,
+    ) -> str:
+        """Explain what makes the best move stand out."""
+        best_label = self._move_label(best_analysis, notation)
+        template = rng.choice(PHRASE_LIBRARY["comparison_key_difference"])
+        return template.format(move=best_label)
+
+    # =========================================================================
+    # END NEW STYLE GENERATORS
+    # =========================================================================
 
     def _move_label(self, cand: Any, notation: str) -> str:
         if notation == "san":
@@ -1297,14 +2265,29 @@ class ReasoningTraceGenerator:
         return board.is_capture(move) or board.gives_check(move) or bool(move.promotion)
 
     def _select_style(self, cfg: Dict[str, Any], source: Optional[str], rng: random.Random) -> str:
+        # Explicit style override
         if cfg.get("style"):
             return cfg["style"]
+
+        # Use configured weights if provided
         weights = cfg.get("style_weights")
         if weights:
             return self._weighted_choice(weights, rng)
+
+        # Source-based defaults for puzzles
         if source == "puzzle":
-            return "tactical"
-        return "thorough"
+            puzzle_weights = {
+                "tactical": 0.35,
+                "problem_focused": 0.30,
+                "quick": 0.15,
+                "intuition": 0.10,
+                "comparison_focused": 0.10,
+            }
+            return self._weighted_choice(puzzle_weights, rng)
+
+        # Default weighted selection using STYLE_CONFIGS
+        default_weights = {style: config["default_weight"] for style, config in STYLE_CONFIGS.items()}
+        return self._weighted_choice(default_weights, rng)
 
     def _weighted_choice(self, weights: Dict[str, float], rng: random.Random) -> str:
         total = sum(max(v, 0.0) for v in weights.values())
@@ -1540,12 +2523,15 @@ class ReasoningTraceGenerator:
         move: chess.Move,
         cand: Any,
         cfg: Dict[str, Any],
+        rng: Optional[random.Random] = None,
     ) -> List[str]:
         motifs: List[str] = []
         max_motifs = int(cfg.get("max_motifs_per_candidate", 1))
         attacker_color = board.color_at(move.from_square)
         temp = board.copy()
         temp.push(move)
+        if rng is None:
+            rng = random.Random()
 
         double_check = self._detect_double_check(temp, attacker_color)
         if double_check:
@@ -1602,6 +2588,33 @@ class ReasoningTraceGenerator:
         quiet_move = self._detect_quiet_move(board, move, attacker_color, cfg)
         if quiet_move:
             motifs.append(quiet_move)
+
+        # Advanced coordination and positional motifs
+        if cfg.get("include_coordination", True):
+            battery = self._detect_battery_formation(temp, move, attacker_color)
+            if battery:
+                motifs.append(battery)
+            outpost = self._detect_knight_outpost(temp, move, attacker_color)
+            if outpost:
+                motifs.append(outpost)
+
+        # Tempo awareness
+        if cfg.get("include_tempo", True):
+            tempo = self._detect_tempo_move(board, move, attacker_color)
+            if tempo:
+                motifs.append(tempo)
+
+        # Prophylactic thinking
+        if cfg.get("include_prophylactic", True):
+            prophylactic = self._detect_prophylactic_move(board, move, attacker_color)
+            if prophylactic:
+                motifs.append(prophylactic)
+
+        # Aesthetic/emotional commentary
+        if cfg.get("include_aesthetic", True):
+            aesthetic = self._detect_aesthetic_move(board, move, cand, attacker_color, rng)
+            if aesthetic:
+                motifs.append(aesthetic)
 
         return motifs[:max_motifs]
 
@@ -2049,6 +3062,266 @@ class ReasoningTraceGenerator:
         if board.is_castling(move):
             return None
         return "quiet move"
+
+    # =========================================================================
+    # NEW ADVANCED DETECTION METHODS
+    # =========================================================================
+
+    def _detect_battery_formation(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        attacker_color: Optional[bool],
+    ) -> Optional[str]:
+        """Detect if move creates a battery (Q+B diagonal or Q+R/R+R on file)."""
+        if attacker_color is None:
+            return None
+
+        to_sq = move.to_square
+        piece = board.piece_at(to_sq)
+        if piece is None:
+            return None
+
+        to_file = chess.square_file(to_sq)
+
+        # Check for rook battery on same file
+        if piece.piece_type == chess.ROOK:
+            other_rooks = list(board.pieces(chess.ROOK, attacker_color))
+            for rook_sq in other_rooks:
+                if rook_sq != to_sq and chess.square_file(rook_sq) == to_file:
+                    return "doubled rooks on the file"
+
+        # Check for queen + rook battery on file
+        if piece.piece_type in (chess.QUEEN, chess.ROOK):
+            queens = list(board.pieces(chess.QUEEN, attacker_color))
+            rooks = list(board.pieces(chess.ROOK, attacker_color))
+            for q_sq in queens:
+                if q_sq != to_sq and chess.square_file(q_sq) == to_file:
+                    return "queen and rook battery"
+            for r_sq in rooks:
+                if r_sq != to_sq and piece.piece_type == chess.QUEEN:
+                    if chess.square_file(r_sq) == to_file:
+                        return "queen and rook battery"
+
+        # Check for queen + bishop battery on diagonal
+        if piece.piece_type in (chess.QUEEN, chess.BISHOP):
+            def same_diagonal(sq1: chess.Square, sq2: chess.Square) -> bool:
+                return abs(chess.square_file(sq1) - chess.square_file(sq2)) == \
+                       abs(chess.square_rank(sq1) - chess.square_rank(sq2))
+
+            queens = list(board.pieces(chess.QUEEN, attacker_color))
+            bishops = list(board.pieces(chess.BISHOP, attacker_color))
+
+            for q_sq in queens:
+                if q_sq != to_sq and same_diagonal(q_sq, to_sq):
+                    return "queen and bishop battery on the diagonal"
+            for b_sq in bishops:
+                if b_sq != to_sq and piece.piece_type == chess.QUEEN:
+                    if same_diagonal(b_sq, to_sq):
+                        return "queen and bishop battery"
+
+        return None
+
+    def _detect_knight_outpost(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        attacker_color: Optional[bool],
+    ) -> Optional[str]:
+        """Detect if move places knight on a strong outpost."""
+        if attacker_color is None:
+            return None
+
+        piece = board.piece_at(move.to_square)
+        if piece is None or piece.piece_type != chess.KNIGHT:
+            return None
+
+        to_sq = move.to_square
+        to_file = chess.square_file(to_sq)
+        to_rank = chess.square_rank(to_sq)
+
+        # Check if in enemy territory (ranks 4-6 for white, 3-5 for black)
+        if attacker_color == chess.WHITE:
+            if to_rank < 3:  # Not advanced enough
+                return None
+        else:
+            if to_rank > 4:  # Not advanced enough
+                return None
+
+        # Check if defended by own pawn
+        if not self._pawn_defended(board, attacker_color, to_sq):
+            return None
+
+        # Check if can't be attacked by enemy pawns
+        enemy_color = not attacker_color
+        enemy_pawns = board.pieces(chess.PAWN, enemy_color)
+
+        # Check adjacent files for enemy pawns that could attack
+        for adj_file in [to_file - 1, to_file + 1]:
+            if 0 <= adj_file <= 7:
+                for pawn_sq in enemy_pawns:
+                    pawn_file = chess.square_file(pawn_sq)
+                    pawn_rank = chess.square_rank(pawn_sq)
+                    if pawn_file == adj_file:
+                        # Enemy pawn could potentially attack
+                        if attacker_color == chess.WHITE and pawn_rank > to_rank:
+                            return None  # Pawn can advance and attack
+                        if attacker_color == chess.BLACK and pawn_rank < to_rank:
+                            return None
+
+        return "strong knight outpost"
+
+    def _detect_bishop_pair_advantage(
+        self,
+        board: chess.Board,
+        attacker_color: Optional[bool],
+    ) -> Optional[str]:
+        """Detect if side has bishop pair advantage."""
+        if attacker_color is None:
+            return None
+
+        own_bishops = len(list(board.pieces(chess.BISHOP, attacker_color)))
+        opp_bishops = len(list(board.pieces(chess.BISHOP, not attacker_color)))
+
+        if own_bishops == 2 and opp_bishops < 2:
+            return "bishop pair advantage"
+        return None
+
+    def _detect_prophylactic_move(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        attacker_color: Optional[bool],
+    ) -> Optional[str]:
+        """Detect if move prevents a significant opponent threat."""
+        if attacker_color is None:
+            return None
+
+        # Count opponent threats BEFORE move
+        threats_before = self._count_significant_threats(board, not attacker_color)
+
+        # Apply move and count threats AFTER
+        test_board = board.copy()
+        test_board.push(move)
+        threats_after = self._count_significant_threats(test_board, not attacker_color)
+
+        # If threats significantly reduced, it's prophylactic
+        if threats_before > 0 and threats_after < threats_before:
+            reduction = threats_before - threats_after
+            if reduction >= 2:
+                return "prevents multiple opponent threats"
+            elif reduction == 1:
+                return "prophylactic - stops opponent's plan"
+
+        return None
+
+    def _count_significant_threats(
+        self,
+        board: chess.Board,
+        color: bool,
+    ) -> int:
+        """Count significant threats (checks, attacks on hanging pieces)."""
+        count = 0
+
+        # Count checking moves
+        test_board = board.copy()
+        test_board.turn = color
+        for m in test_board.legal_moves:
+            if test_board.gives_check(m):
+                count += 1
+                break  # One check is enough to count
+
+        # Count attacks on undefended pieces
+        opponent = not color
+        for sq in chess.SQUARES:
+            piece = board.piece_at(sq)
+            if piece and piece.color == opponent:
+                if board.is_attacked_by(color, sq):
+                    if not board.is_attacked_by(opponent, sq):
+                        count += 1  # Hanging piece under attack
+
+        return count
+
+    def _detect_tempo_move(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        attacker_color: Optional[bool],
+    ) -> Optional[str]:
+        """Detect if move gains tempo by developing while attacking."""
+        if attacker_color is None:
+            return None
+
+        piece = board.piece_at(move.from_square)
+        if piece is None:
+            return None
+
+        # Check if it's a developing move (from back ranks)
+        from_rank = chess.square_rank(move.from_square)
+        is_developing = False
+        if attacker_color == chess.WHITE:
+            is_developing = from_rank <= 1  # From ranks 1-2
+        else:
+            is_developing = from_rank >= 6  # From ranks 7-8
+
+        if not is_developing:
+            return None
+
+        # Check if gives check
+        if board.gives_check(move):
+            return "develops with check"
+
+        # Check if move creates a threat after being played
+        test_board = board.copy()
+        test_board.push(move)
+
+        # Check if attacks a piece
+        to_sq = move.to_square
+        attacks = test_board.attacks(to_sq)
+        for attacked_sq in attacks:
+            target = test_board.piece_at(attacked_sq)
+            if target and target.color != attacker_color:
+                if target.piece_type in (chess.QUEEN, chess.ROOK):
+                    return "develops while attacking heavy piece"
+                elif target.piece_type in (chess.KNIGHT, chess.BISHOP):
+                    return "develops with tempo"
+
+        return None
+
+    def _detect_aesthetic_move(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        cand: Any,
+        attacker_color: Optional[bool],
+        rng: random.Random,
+    ) -> Optional[str]:
+        """Detect aesthetically notable moves (sacrifices, surprising quiet moves)."""
+        if attacker_color is None:
+            return None
+
+        # Check for sacrifice (losing material but best move)
+        if board.is_capture(move):
+            piece = board.piece_at(move.from_square)
+            captured = board.piece_at(move.to_square)
+            if piece and captured:
+                piece_val = PIECE_VALUES.get(piece.piece_type, 0)
+                captured_val = PIECE_VALUES.get(captured.piece_type, 0)
+                if piece_val > captured_val + 1:  # Sacrificing more than captured
+                    win_prob = getattr(cand, "win_probability", 0.5)
+                    if win_prob > 0.55:  # But still winning
+                        return rng.choice(PHRASE_LIBRARY.get("beautiful_sacrifice", ["brilliant sacrifice"]))
+
+        # Check for quiet move that's surprisingly best
+        if not board.is_capture(move) and not board.gives_check(move):
+            # If there were captures available but quiet move is best
+            has_captures = any(board.is_capture(m) for m in board.legal_moves)
+            if has_captures:
+                win_prob = getattr(cand, "win_probability", 0.5)
+                if win_prob > 0.55:
+                    return rng.choice(PHRASE_LIBRARY.get("surprising_quiet_move", ["surprisingly quiet"]))
+
+        return None
 
     @staticmethod
     def _slider_directions(piece: Optional[chess.Piece]) -> List[Tuple[int, int]]:

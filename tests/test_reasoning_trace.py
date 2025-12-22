@@ -62,6 +62,7 @@ class TestReasoningTraceThreatScan(unittest.TestCase):
             ],
         )
         cfg = {
+            "style": "thorough",  # Explicit style to ensure threat_scan flow
             "include_threat_scan": True,
             "include_orientation": False,
             "include_assessment": False,
@@ -89,6 +90,7 @@ class TestReasoningTraceThreatScan(unittest.TestCase):
             ],
         )
         cfg = {
+            "style": "thorough",  # Explicit style to ensure threat_scan flow
             "include_threat_scan": True,
             "include_orientation": False,
             "include_assessment": False,
@@ -118,6 +120,7 @@ class TestReasoningTraceConsistency(unittest.TestCase):
             ],
         )
         cfg = {
+            "style": "thorough",  # Explicit style to ensure assessment flow
             "include_threat_scan": False,
             "include_orientation": False,
             "include_assessment": True,
@@ -453,6 +456,7 @@ class TestReasoningTraceMotifs(unittest.TestCase):
             ],
         )
         cfg = {
+            "style": "thorough",  # Explicit style to ensure motif flow
             "include_motifs": True,
             "max_motifs_per_candidate": 1,
             "include_threat_scan": False,
@@ -522,6 +526,7 @@ class TestReasoningTraceTraps(unittest.TestCase):
             "d2d4": 0.54,
         }
         cfg = {
+            "style": "thorough",  # Explicit style to ensure trap detection flow
             "include_trap_detection": True,
             "trap_min_cp_swing": 60,
             "trap_shallow_good_cp": 10,
@@ -577,6 +582,272 @@ class TestReasoningTraceTraps(unittest.TestCase):
         trap = generator._detect_trap_for_candidate(candidate, analysis, cfg)
         self.assertIsNotNone(trap)
         self.assertEqual(trap[2], "confirmed")
+
+
+class TestNewStyles(unittest.TestCase):
+    """Tests for the new style generators: quick, problem_focused, intuition, comparison_focused."""
+
+    def test_quick_style_length(self):
+        """Quick style should produce 2-3 sentences (under 100 words)."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.51),
+                ("d2d4", 5, 0.49),
+                ("g1f3", 0, 0.48),
+            ],
+        )
+        cfg = {"style": "quick"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(42))
+
+        # Should be short (under 100 words)
+        word_count = len(text.split())
+        self.assertLess(word_count, 100, f"Quick style too long: {word_count} words")
+
+        # Should contain the best move
+        self.assertIn("e2e4", text)
+
+    def test_quick_style_structure(self):
+        """Quick style should have position, candidates, and conclusion."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.51),
+                ("d2d4", 5, 0.49),
+            ],
+        )
+        cfg = {"style": "quick"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(43))
+
+        # Should mention White to move
+        self.assertTrue("White" in text or "white" in text.lower())
+
+        # Should contain best move in conclusion
+        self.assertIn("e2e4", text)
+
+    def test_problem_focused_has_attempts(self):
+        """Problem-focused style should show failed attempts."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.55),
+                ("d2d4", 0, 0.48),
+                ("c2c4", -10, 0.45),
+            ],
+        )
+        cfg = {"style": "problem_focused"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(44))
+
+        # Should have problem identification
+        lowered = text.lower()
+        self.assertTrue(
+            "challenge" in lowered
+            or "problem" in lowered
+            or "solving" in lowered
+            or "question" in lowered
+            or "issue" in lowered
+            or "task" in lowered
+        )
+
+        # Should mention best move
+        self.assertIn("e2e4", text)
+
+    def test_problem_focused_has_solution(self):
+        """Problem-focused style should show the solution."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.55),
+                ("d2d4", 0, 0.48),
+            ],
+        )
+        cfg = {"style": "problem_focused"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(45))
+
+        lowered = text.lower()
+        # Should have solution language
+        self.assertTrue(
+            "solution" in lowered
+            or "works" in lowered
+            or "answer" in lowered
+            or "solves" in lowered
+        )
+
+    def test_intuition_has_verification(self):
+        """Intuition style should have verification section."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.51),
+                ("d2d4", 5, 0.49),
+            ],
+        )
+        cfg = {"style": "intuition", "include_pv": True}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(46))
+
+        lowered = text.lower()
+        # Should have verification language
+        self.assertTrue(
+            "verify" in lowered
+            or "check" in lowered
+            or "confirm" in lowered
+            or "testing" in lowered
+            or "looking" in lowered
+        )
+
+    def test_intuition_has_impression(self):
+        """Intuition style should have first impression."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.51),
+            ],
+        )
+        cfg = {"style": "intuition"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(47))
+
+        lowered = text.lower()
+        # Should have impression/intuition language
+        self.assertTrue(
+            "impression" in lowered
+            or "instinct" in lowered
+            or "gut" in lowered
+            or "feeling" in lowered
+        )
+
+    def test_comparison_has_candidates(self):
+        """Comparison style should compare multiple moves."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.55),
+                ("d2d4", 5, 0.52),
+                ("g1f3", 0, 0.48),
+            ],
+        )
+        cfg = {"style": "comparison_focused"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(48))
+
+        # Should mention multiple candidates
+        self.assertIn("e2e4", text)
+        self.assertIn("d2d4", text)
+
+    def test_comparison_has_pros_cons(self):
+        """Comparison style should have pros/cons structure."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.55),
+                ("d2d4", 5, 0.52),
+            ],
+        )
+        cfg = {"style": "comparison_focused"}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(49))
+
+        # Should have comparison structure with /
+        self.assertIn("/", text)
+
+    def test_comparison_fallback_to_quick(self):
+        """Comparison style with < 2 candidates should fall back to quick."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.55),
+            ],
+        )
+        cfg = {"style": "comparison_focused", "min_candidates": 1, "max_candidates": 1}
+        generator = ReasoningTraceGenerator(cfg)
+        text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(50))
+
+        # Should still work and be short (fallback to quick)
+        word_count = len(text.split())
+        self.assertLess(word_count, 100)
+        self.assertIn("e2e4", text)
+
+    def test_style_weights_selection(self):
+        """Style weights should affect selection distribution."""
+        cfg = {
+            "style_weights": {
+                "quick": 1.0,
+                "thorough": 0.0,
+                "concise": 0.0,
+                "tactical": 0.0,
+            }
+        }
+        generator = ReasoningTraceGenerator(cfg)
+        rng = random.Random(51)
+
+        # With weight 1.0 for quick, should always select quick
+        style = generator._select_style(cfg, None, rng)
+        self.assertEqual(style, "quick")
+
+    def test_style_weights_new_styles(self):
+        """New styles should be selectable via weights."""
+        for new_style in ["quick", "problem_focused", "intuition", "comparison_focused"]:
+            cfg = {
+                "style_weights": {
+                    new_style: 1.0,
+                }
+            }
+            generator = ReasoningTraceGenerator(cfg)
+            rng = random.Random(52)
+
+            style = generator._select_style(cfg, None, rng)
+            self.assertEqual(style, new_style, f"Failed for style: {new_style}")
+
+    def test_conclusion_uses_expanded_phrases(self):
+        """Conclusion should use the expanded phrase library."""
+        board = chess.Board()
+        analysis = make_analysis(
+            board,
+            [
+                ("e2e4", 10, 0.51),
+                ("d2d4", 5, 0.49),
+            ],
+        )
+        # Use thorough style to get the standard conclusion flow
+        cfg = {
+            "style": "thorough",
+            "include_threat_scan": False,
+            "include_orientation": False,
+            "include_assessment": False,
+            "include_opening": False,
+            "include_tablebase": False,
+            "include_reconsideration": False,
+            "include_dead_end": False,
+            "include_comparison": False,
+            "include_pv": False,
+            "min_candidates": 1,
+            "max_candidates": 1,
+        }
+        generator = ReasoningTraceGenerator(cfg)
+
+        # Generate multiple times and check for variety
+        conclusions = set()
+        for seed in range(10):
+            text = generator.generate({"fen": board.fen()}, analysis, rng=random.Random(seed + 100))
+            # Extract last sentence/conclusion
+            conclusions.add(text.strip())
+
+        # Should have variety in conclusions (not all identical)
+        self.assertGreater(len(conclusions), 1, "Conclusions should vary across generations")
 
 
 if __name__ == "__main__":
