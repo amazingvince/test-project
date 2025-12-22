@@ -335,8 +335,17 @@ class DistillationTrainer(Trainer):
             valid_mask = (move_positions >= 0) & (move_positions < seq_len)
             move_pos_found_ratio = valid_mask.float().mean().item()
             if valid_mask.any():
-                batch_indices = torch.arange(batch_size, device=device)[valid_mask]
-                student_logits = logits[batch_indices, move_positions[valid_mask]]
+                # Check if we're using Flash Attention packing (batch_size=1 but multiple move positions)
+                is_packed = (batch_size == 1 and move_positions.shape[0] > 1)
+                if is_packed:
+                    # Packed case: all sequences concatenated into one
+                    # move_positions are offsets within the single flattened sequence
+                    valid_positions = move_positions[valid_mask]
+                    student_logits = logits[0, valid_positions]  # (num_valid, vocab)
+                else:
+                    # Standard case: separate sequences per batch item
+                    batch_indices = torch.arange(batch_size, device=device)[valid_mask]
+                    student_logits = logits[batch_indices, move_positions[valid_mask]]
                 teacher_probs_tensor = teacher_probs_tensor[valid_mask]
                 hard_targets_tensor = hard_targets_tensor[valid_mask]
             else:
