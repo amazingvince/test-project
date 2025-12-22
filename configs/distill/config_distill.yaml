@@ -16,6 +16,13 @@ model:
   attn_implementation: "flash_attention_2"
   torch_dtype: "bfloat16"
 
+# Tokenizer augmentation
+tokenizer:
+  # Distillation can use a one-token move head by adding an explicit vocabulary
+  # containing all UCI moves.
+  chess_mode: "tags_and_moves"
+  add_think_tags: true
+
 training:
   output_dir: "./outputs/chess-distill-5090"
   
@@ -72,6 +79,12 @@ training:
   # Evaluation
   eval_strategy: "steps"
   eval_steps: 500
+  eval_size: 200
+
+  # Fast chess eval callback (separate from eval_loss)
+  chess_eval_positions: 150
+  chess_eval_batch_size: 32
+  chess_eval_steps: 500
   
   # Optimizations
   bf16: true
@@ -148,6 +161,10 @@ stockfish:
 #         Teaches move quality ranking across ALL legal moves
 #
 distillation:
+  # How the KL/JSD loss is applied:
+  # - move_token: KL at the <uci_move> position over a single move token (requires `tags_and_moves`)
+  # - move_prefix: KL over the move string token-by-token (works with `tags_only`)
+  move_distill_mode: "move_token"
   # Enable CE loss on thinking text (recommended: true)
   # This teaches the model to reason about positions
   ce_loss_enabled: true

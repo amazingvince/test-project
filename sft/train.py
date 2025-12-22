@@ -39,6 +39,7 @@ from transformers import (
 )
 
 from src.utils.chess_eval_callback import FastChessEvalCallback as ChessEvalCallback, prepare_eval_positions
+from src.utils.chess_tokenizer import ChessTokenizerMode, add_chess_tokens, generate_all_uci_moves
 
 # ============================================================================
 # Performance optimizations - set early
@@ -192,25 +193,37 @@ class SFTDataCollatorWithPromptMasking:
             # Tokenize both
             full_tokens = self.tokenizer(
                 full_text,
-                truncation=True,
-                max_length=self.max_length,
+                truncation=False,
                 return_tensors=None,
             )
             
             prompt_tokens = self.tokenizer(
                 prompt_text,
-                truncation=True,
-                max_length=self.max_length,
+                truncation=False,
                 return_tensors=None,
             )
             
             input_ids = full_tokens['input_ids']
-            attention_mask = full_tokens['attention_mask']
-            
+            attention_mask = full_tokens.get('attention_mask') or [1] * len(input_ids)
+             
             # Create labels: -100 for prompt tokens, actual ids for response
             labels = input_ids.copy()
             prompt_length = len(prompt_tokens['input_ids'])
-            
+
+            if len(input_ids) > self.max_length:
+                overflow = len(input_ids) - self.max_length
+                removed_from_assistant = max(0, overflow - prompt_length)
+                if removed_from_assistant:
+                    warnings.warn(
+                        "Example exceeded max_length; removed "
+                        f"{removed_from_assistant} assistant tokens (max_length={self.max_length}). "
+                        "Consider reducing reasoning_trace.max_trace_tokens or increasing model.max_seq_length."
+                    )
+                input_ids = input_ids[overflow:]
+                attention_mask = attention_mask[overflow:]
+                labels = input_ids.copy()
+                prompt_length = max(0, prompt_length - overflow)
+             
             # Mask all prompt tokens (set to -100 = ignore_index)
             for i in range(min(prompt_length, len(labels))):
                 labels[i] = -100
@@ -433,6 +446,7 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
     """Setup model and tokenizer with optimizations."""
     model_config = config.get('model', {})
     training_config = config.get('training', {})
+    tokenizer_config = config.get("tokenizer", {})
     
     model_name = model_config.get('name', 'Qwen/Qwen3-0.6B')
     print(f"Loading model: {model_name}")
@@ -474,7 +488,27 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
         print("Gradient checkpointing enabled (non-reentrant)")
-    
+
+    mode_str = tokenizer_config.get("chess_mode", "tags_only")
+    if mode_str not in ("tags_only", "tags_and_moves"):
+        raise ValueError(f"tokenizer.chess_mode must be 'tags_only' or 'tags_and_moves' (got {mode_str!r})")
+    mode: ChessTokenizerMode = mode_str
+    add_think_tags = bool(tokenizer_config.get("add_think_tags", False))
+
+    all_uci_moves = generate_all_uci_moves() if mode == "tags_and_moves" else None
+    added = add_chess_tokens(
+        tokenizer=tokenizer,
+        model=model,
+        mode=mode,
+        add_think_tags=add_think_tags,
+        all_uci_moves=all_uci_moves,
+    )
+    if added["special_tokens"] or added["move_tokens"]:
+        print(
+            f"Added tokens: {added['special_tokens']} special, "
+            f"{added['move_tokens']} UCI move tokens (mode={mode})"
+        )
+     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -498,7 +532,8 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
 def load_or_create_dataset(
     config: Dict[str, Any],
     streaming: bool = False,
-    preprocessed_path: Optional[str] = None
+    preprocessed_path: Optional[str] = None,
+    tokenizer=None,
 ):
     """Load existing dataset or create from scratch."""
     from src.utils.data_processing import create_streaming_dataset, preprocess_and_save
@@ -514,13 +549,48 @@ def load_or_create_dataset(
         dataset = load_from_disk(preprocessed_path)
         
         if 'messages' not in dataset.column_names:
-            prompt_config = config.get('prompt', {})
-            dataset = add_messages_column(
-                dataset,
-                prompt_template=prompt_config.get('template'),
-                response_template=prompt_config.get('response_template'),
-                num_proc=os.cpu_count() or 4
-            )
+            reasoning_cfg = config.get("reasoning_trace", {})
+            formatting_cfg = config.get("formatting", {})
+
+            if reasoning_cfg.get("enabled") and "move_evaluations" in dataset.column_names:
+                if tokenizer is None:
+                    raise ValueError("tokenizer must be provided to build reasoning-trace messages.")
+
+                from src.distill.reasoning_trace import ReasoningTraceGenerator
+                from src.sft.formatting_sft import add_messages_with_reasoning_trace, maybe_override_target_to_best
+
+                distill_cfg = config.get("distillation", {})
+                min_probability = float(distill_cfg.get("min_probability", 0.001))
+                stockfish_temperature = float(distill_cfg.get("stockfish_temperature", 100.0))
+                include_board = bool(formatting_cfg.get("include_board", False))
+                always_choose_best = bool(
+                    reasoning_cfg.get("always_choose_best_move", False)
+                    or data_config.get("target_move") == "best"
+                )
+
+                trace_generator = ReasoningTraceGenerator(reasoning_cfg, tokenizer=tokenizer)
+                if data_config.get("target_move") == "best" and "best_move_uci" in dataset.column_names:
+                    dataset = dataset.map(maybe_override_target_to_best, desc="Setting target_move_uci=best_move_uci")
+
+                def _add_messages(ex):
+                    return add_messages_with_reasoning_trace(
+                        ex,
+                        reasoning_trace_generator=trace_generator,
+                        include_board=include_board,
+                        always_choose_best_move=always_choose_best,
+                        min_probability=min_probability,
+                        stockfish_temperature=stockfish_temperature,
+                    )
+
+                dataset = dataset.map(_add_messages, desc="Building reasoning-trace messages")
+            else:
+                prompt_config = config.get('prompt', {})
+                dataset = add_messages_column(
+                    dataset,
+                    prompt_template=prompt_config.get('template'),
+                    response_template=prompt_config.get('response_template'),
+                    num_proc=os.cpu_count() or 4
+                )
         
         if eval_size > 0 and len(dataset) > eval_size:
             dataset = dataset.shuffle(seed=training_config.get('seed', 42))
@@ -860,7 +930,8 @@ def main():
     train_dataset, eval_dataset = load_or_create_dataset(
         config,
         streaming=args.streaming,
-        preprocessed_path=args.preprocessed_path
+        preprocessed_path=args.preprocessed_path,
+        tokenizer=tokenizer,
     )
     
     if hasattr(train_dataset, '__len__'):

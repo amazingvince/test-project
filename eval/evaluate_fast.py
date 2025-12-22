@@ -40,6 +40,7 @@ from src.utils.chess_utils import (
     get_legal_moves_uci, 
     get_first_legal_move,
     extract_uci_from_response,
+    trim_generated_token_ids,
     validate_uci_move
 )
 from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
@@ -208,12 +209,14 @@ def generate_moves_batch(
     if tokenizer.eos_token_id is not None:
         eos_token_ids.append(int(tokenizer.eos_token_id))
     close_tag_id = tokenizer.convert_tokens_to_ids("</uci_move>")
+    close_tag_token_id: Optional[int] = None
     if (
         isinstance(close_tag_id, int)
         and close_tag_id >= 0
         and (tokenizer.unk_token_id is None or close_tag_id != tokenizer.unk_token_id)
     ):
-        eos_token_ids.append(int(close_tag_id))
+        close_tag_token_id = int(close_tag_id)
+        eos_token_ids.append(close_tag_token_id)
     eos_token_ids = list(dict.fromkeys(eos_token_ids))
 
     generate_kwargs = dict(inputs)
@@ -233,7 +236,8 @@ def generate_moves_batch(
     if do_sample:
         generate_kwargs["temperature"] = float(temperature)
         generate_kwargs["top_p"] = float(top_p)
-        generate_kwargs["top_k"] = int(top_k)
+        if hasattr(model.generation_config, "top_k"):
+            generate_kwargs["top_k"] = int(top_k)
         if hasattr(model.generation_config, "min_p"):
             generate_kwargs["min_p"] = float(min_p)
 
@@ -243,13 +247,19 @@ def generate_moves_batch(
     # Decode responses
     results = []
     for i, output in enumerate(outputs):
-        response = tokenizer.decode(
-            output[input_length:], 
-            skip_special_tokens=False
+        generated_ids = output[input_length:].tolist()
+        trimmed_ids = trim_generated_token_ids(
+            generated_ids,
+            close_tag_id=close_tag_token_id,
+            eos_token_ids=(
+                [int(tokenizer.eos_token_id)] if tokenizer.eos_token_id is not None else ()
+            ),
+            pad_token_id=tokenizer.pad_token_id,
         )
+        response = tokenizer.decode(trimmed_ids, skip_special_tokens=False)
         uci_move = extract_uci_from_response(response)
         results.append((uci_move, response))
-    
+     
     return results
 
 
@@ -559,6 +569,22 @@ def evaluate_model(
         stockfish_workers: Number of parallel Stockfish workers
         verbose: Enable verbose output
     """
+    min_input_tokens = 100
+    if max_total_tokens <= min_input_tokens:
+        raise ValueError(
+            f"max_total_tokens={max_total_tokens} is too small; must be > {min_input_tokens}."
+        )
+
+    if max_new_tokens >= max_total_tokens - min_input_tokens:
+        old_value = max_new_tokens
+        max_new_tokens = max_total_tokens - min_input_tokens
+        logger.warning(
+            "max_new_tokens (%d) too large for max_total_tokens (%d); reduced to %d to leave room for the prompt",
+            old_value,
+            max_total_tokens,
+            max_new_tokens,
+        )
+
     results = []
     all_predictions = []
 

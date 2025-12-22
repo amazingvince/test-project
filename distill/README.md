@@ -14,6 +14,11 @@ Stage 2 refines the move policy by distilling a Stockfish teacher distribution o
 - `configs/distill/config_distill.yaml`: tuned for a single RTX 5090 + 32 CPU cores.
 - `configs/distill/config_distill_h100.yaml`: tuned for a single H100 + 32 CPU cores.
 
+**Tokenizer + KL modes**
+- `tokenizer.chess_mode: tags_and_moves` adds `<uci_move>` tags plus all 8,064 UCI moves as single tokens.
+  - Use with `distillation.move_distill_mode: move_token` (fastest; KL is applied at the `<uci_move>` position).
+- `tokenizer.chess_mode: tags_only` adds only `<uci_move>` and `</uci_move>`.
+  - Use with `distillation.move_distill_mode: move_prefix` (no 8k move vocab; KL is applied token-by-token over the move string).
+
 **Related docs**
 - `docs/chess_reasoning_trace_generator.md`: reasoning trace design and configuration knobs.
-

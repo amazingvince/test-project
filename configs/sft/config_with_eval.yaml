@@ -6,9 +6,17 @@
 
 model:
   name: "Qwen/Qwen3-0.6B"  # Or your preferred model
-  max_seq_length: 1024
+  max_seq_length: 2048
   attn_implementation: "flash_attention_2"
   torch_dtype: "bfloat16"
+
+# Tokenizer augmentation
+tokenizer:
+  # SFT can work well without the 8k move-token vocabulary.
+  # - tags_only: add only <uci_move> and </uci_move>
+  # - tags_and_moves: also add all 8,064 UCI move strings as tokens
+  chess_mode: "tags_only"
+  add_think_tags: false
   
 training:
   output_dir: "./outputs/chess-sft-eval"
@@ -80,6 +88,11 @@ data:
   shuffle_buffer_size: 10000
   eval_split_ratio: 0.02
 
+  # What move to supervise on:
+  # - played: the move from the game / puzzle solution line
+  # - best: Stockfish best move for the position (recommended for this config)
+  target_move: "best"
+
 # Stockfish Evaluation Settings
 stockfish:
   # Path to Stockfish binary (auto-detected if not specified)
@@ -143,6 +156,23 @@ formatting:
   
   # Number of top moves to show in thinking
   top_n_moves: 5
+
+  # Whether to include the ASCII board in the prompt.
+  include_board: false
+
+# Teacher distribution settings (used for reasoning-trace candidate selection).
+distillation:
+  min_probability: 0.001
+  stockfish_temperature: 100.0
+
+# Reasoning Trace Configuration (shared with distillation)
+reasoning_trace:
+  enabled: true
+  always_choose_best_move: true
+  max_trace_tokens: 1024
+  move_notation: "uci"
+  include_opening: true
+  include_tablebase: true
 
 # ELO-based sampling weights (for data collection)
 elo_weights:

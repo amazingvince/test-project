@@ -16,6 +16,11 @@ model:
   attn_implementation: "flash_attention_2"
   torch_dtype: "bfloat16"
 
+# Tokenizer augmentation
+tokenizer:
+  chess_mode: "tags_and_moves"
+  add_think_tags: true
+
 training:
   output_dir: "./outputs/chess-distill-h100"
   
@@ -40,7 +45,7 @@ training:
 
   
   # Performance optimizations
-  torch_compile: true  # Enable torch.compile for faster training (may have warm-up overhead)
+  torch_compile: false  # Enable torch.compile for faster training (may have warm-up overhead)
 
   # Collation
   # - When `use_unpad=true`, we pack the batch into a single flattened sequence and rely on
@@ -74,6 +79,12 @@ training:
   # Evaluation
   eval_strategy: "steps"
   eval_steps: 500
+  eval_size: 200
+
+  # Fast chess eval callback (separate from eval_loss)
+  chess_eval_positions: 150
+  chess_eval_batch_size: 32
+  chess_eval_steps: 500
   
   # Optimizations
   bf16: true
@@ -146,6 +157,7 @@ stockfish:
 #         Teaches move quality ranking across ALL legal moves
 #
 distillation:
+  move_distill_mode: "move_token"
   # Enable CE loss on thinking text (recommended: true)
   # This teaches the model to reason about positions
   ce_loss_enabled: true
@@ -300,7 +312,11 @@ reasoning_trace:
 
   # Optional data paths (if present)
   opening_paths:
-    - "./data/openings"
+    - "./data/openings/a.tsv"
+    - "./data/openings/b.tsv"
+    - "./data/openings/c.tsv"
+    - "./data/openings/d.tsv"
+    - "./data/openings/e.tsv"
   tablebase_paths:
     - "./data/syzygy"
 

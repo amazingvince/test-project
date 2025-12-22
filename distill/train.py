@@ -166,6 +166,12 @@ from src.distill.collator_distill import (
 )
 from src.distill.stockfish_teacher import StockfishTeacher
 from src.distill.reasoning_trace import ReasoningTraceGenerator
+from src.utils.chess_tokenizer import (
+    ChessTokenizerMode,
+    add_chess_tokens,
+    build_move_to_token_id,
+    generate_all_uci_moves,
+)
 
 
 # ============================================================================
@@ -194,6 +200,7 @@ class DistillationTrainer(Trainer):
         *args,
         distill_loss_fn: Optional[ChessDistillationLoss] = None,
         move_to_token_id: Optional[Dict[str, int]] = None,
+        move_distill_mode: str = "move_token",
         ce_loss_enabled: bool = True,
         kl_weight: float = 1.0,
         use_cce: bool = True,
@@ -202,6 +209,17 @@ class DistillationTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.distill_loss_fn = distill_loss_fn
         self.move_to_token_id = move_to_token_id or {}
+        if move_distill_mode not in ("move_token", "move_prefix"):
+            raise ValueError(
+                "distillation.move_distill_mode must be 'move_token' or 'move_prefix' "
+                f"(got {move_distill_mode!r})"
+            )
+        if move_distill_mode == "move_token" and not self.move_to_token_id:
+            raise ValueError(
+                "move_distill_mode='move_token' requires UCI move tokens. "
+                "Set tokenizer.chess_mode='tags_and_moves' or switch to move_prefix."
+            )
+        self.move_distill_mode = move_distill_mode
         self.ce_loss_enabled = ce_loss_enabled
         self.kl_weight = kl_weight
         self.use_cce = use_cce and CCE_AVAILABLE
@@ -277,97 +295,214 @@ class DistillationTrainer(Trainer):
             return (ce_loss, outputs) if return_outputs else ce_loss
 
         # STEP 3: Compute KL loss on move position
-        # Create teacher probability tensors
-        teacher_probs_batch = []
-        hard_targets_batch = []
-        mapped_prob_ratios = []
-        mapped_move_fracs = []
+        if self.move_distill_mode == "move_prefix":
+            tokenizer = getattr(self, "processing_class", None)
+            if tokenizer is None:
+                raise ValueError("Trainer is missing tokenizer/processing_class (required for move_prefix distillation).")
 
-        for i, soft_target in enumerate(soft_targets):
-            if soft_target is None:
-                # Fallback: uniform distribution
-                teacher_probs = torch.ones(vocab_size, device=device) / vocab_size
-                mapped_prob_ratios.append(0.0)
-                mapped_move_fracs.append(0.0)
+            temperature = float(getattr(self.distill_loss_fn, "temperature", 1.0) or 1.0)
+            loss_terms: List[torch.Tensor] = []
+            move_pos_found_ratio = None
+            mapped_prob_ratios = []
+            mapped_move_fracs = []
+            student_logits = None
+
+            if move_positions is not None:
+                move_positions = move_positions.to(device)
+                valid_mask = (move_positions >= 0) & (move_positions < seq_len)
+                move_pos_found_ratio = valid_mask.float().mean().item()
+
+                if batch_size == 1 and move_positions.numel() != batch_size:
+                    # Packed batch: all positions live in batch item 0.
+                    logits_view = logits[0]
+                    for idx, is_valid in enumerate(valid_mask.tolist()):
+                        if not is_valid:
+                            continue
+                        soft_target = soft_targets[idx]
+                        if not soft_target:
+                            continue
+                        best_move = max(soft_target.items(), key=lambda x: x[1])[0]
+                        best_tokens = tokenizer.encode(best_move, add_special_tokens=False)
+                        if not best_tokens:
+                            continue
+
+                        token_cache = {
+                            move: tokenizer.encode(move, add_special_tokens=False)
+                            for move in soft_target.keys()
+                        }
+
+                        base_pos = int(move_positions[idx])
+                        for k in range(len(best_tokens)):
+                            pos = base_pos + k
+                            if pos >= logits_view.shape[0]:
+                                break
+
+                            prefix = best_tokens[:k]
+                            next_token_probs: Dict[int, float] = {}
+                            total = 0.0
+                            for move, prob in soft_target.items():
+                                seq = token_cache.get(move) or []
+                                if len(seq) <= k or seq[:k] != prefix:
+                                    continue
+                                next_token = int(seq[k])
+                                next_token_probs[next_token] = next_token_probs.get(next_token, 0.0) + float(prob)
+                                total += float(prob)
+
+                            if total <= 0.0:
+                                break
+
+                            token_ids = torch.tensor(list(next_token_probs.keys()), device=device, dtype=torch.long)
+                            teacher = torch.tensor(list(next_token_probs.values()), device=device, dtype=torch.float32)
+                            teacher = teacher / teacher.sum()
+
+                            log_probs = F.log_softmax(logits_view[pos].float() / temperature, dim=-1)
+                            loss_terms.append(-(teacher * log_probs.gather(0, token_ids)).sum())
+                else:
+                    # Standard batch: one sample per batch row.
+                    for idx, is_valid in enumerate(valid_mask.tolist()):
+                        if not is_valid:
+                            continue
+                        soft_target = soft_targets[idx]
+                        if not soft_target:
+                            continue
+                        best_move = max(soft_target.items(), key=lambda x: x[1])[0]
+                        best_tokens = tokenizer.encode(best_move, add_special_tokens=False)
+                        if not best_tokens:
+                            continue
+
+                        token_cache = {
+                            move: tokenizer.encode(move, add_special_tokens=False)
+                            for move in soft_target.keys()
+                        }
+
+                        base_pos = int(move_positions[idx])
+                        for k in range(len(best_tokens)):
+                            pos = base_pos + k
+                            if pos >= seq_len:
+                                break
+
+                            prefix = best_tokens[:k]
+                            next_token_probs: Dict[int, float] = {}
+                            total = 0.0
+                            for move, prob in soft_target.items():
+                                seq = token_cache.get(move) or []
+                                if len(seq) <= k or seq[:k] != prefix:
+                                    continue
+                                next_token = int(seq[k])
+                                next_token_probs[next_token] = next_token_probs.get(next_token, 0.0) + float(prob)
+                                total += float(prob)
+
+                            if total <= 0.0:
+                                break
+
+                            token_ids = torch.tensor(list(next_token_probs.keys()), device=device, dtype=torch.long)
+                            teacher = torch.tensor(list(next_token_probs.values()), device=device, dtype=torch.float32)
+                            teacher = teacher / teacher.sum()
+
+                            log_probs = F.log_softmax(logits[idx, pos].float() / temperature, dim=-1)
+                            loss_terms.append(-(teacher * log_probs.gather(0, token_ids)).sum())
+
+            if loss_terms:
+                kl_loss = torch.stack(loss_terms).mean()
+                if temperature != 1.0:
+                    kl_loss = kl_loss * (temperature ** 2)
             else:
-                total_prob = sum(soft_target.values())
-                mapped_prob = sum(
-                    prob for move, prob in soft_target.items()
-                    if move in self.move_to_token_id
-                )
-                mapped_count = sum(
-                    1 for move in soft_target
-                    if move in self.move_to_token_id
-                )
-                mapped_prob_ratios.append(
-                    (mapped_prob / total_prob) if total_prob > 0 else 0.0
-                )
-                mapped_move_fracs.append(
-                    (mapped_count / len(soft_target)) if soft_target else 0.0
-                )
-                # Convert move_probs dict to tensor
-                teacher_probs = create_soft_target_tensor(
-                    move_probs=soft_target,
-                    vocab_size=vocab_size,
-                    move_to_token_id=self.move_to_token_id,
-                    device=device,
-                )
-            teacher_probs_batch.append(teacher_probs)
+                kl_loss = torch.tensor(0.0, device=device)
 
-            # Get hard target (most likely move in teacher distribution)
-            if soft_target:
-                best_move = max(soft_target.items(), key=lambda x: x[1])[0]
-                if best_move in self.move_to_token_id:
-                    hard_targets_batch.append(self.move_to_token_id[best_move])
+            loss_dict = {"soft_loss": float(kl_loss.detach().cpu()), "hard_loss": 0.0}
+        else:
+            # move_token mode: KL over a single move token.
+            # Create teacher probability tensors
+            teacher_probs_batch = []
+            hard_targets_batch = []
+            mapped_prob_ratios = []
+            mapped_move_fracs = []
+
+            for i, soft_target in enumerate(soft_targets):
+                if soft_target is None:
+                    # Fallback: uniform distribution
+                    teacher_probs = torch.ones(vocab_size, device=device) / vocab_size
+                    mapped_prob_ratios.append(0.0)
+                    mapped_move_fracs.append(0.0)
+                else:
+                    total_prob = sum(soft_target.values())
+                    mapped_prob = sum(
+                        prob for move, prob in soft_target.items()
+                        if move in self.move_to_token_id
+                    )
+                    mapped_count = sum(
+                        1 for move in soft_target
+                        if move in self.move_to_token_id
+                    )
+                    mapped_prob_ratios.append(
+                        (mapped_prob / total_prob) if total_prob > 0 else 0.0
+                    )
+                    mapped_move_fracs.append(
+                        (mapped_count / len(soft_target)) if soft_target else 0.0
+                    )
+                    # Convert move_probs dict to tensor
+                    teacher_probs = create_soft_target_tensor(
+                        move_probs=soft_target,
+                        vocab_size=vocab_size,
+                        move_to_token_id=self.move_to_token_id,
+                        device=device,
+                    )
+                teacher_probs_batch.append(teacher_probs)
+
+                # Get hard target (most likely move in teacher distribution)
+                if soft_target:
+                    best_move = max(soft_target.items(), key=lambda x: x[1])[0]
+                    if best_move in self.move_to_token_id:
+                        hard_targets_batch.append(self.move_to_token_id[best_move])
+                    else:
+                        hard_targets_batch.append(0)
                 else:
                     hard_targets_batch.append(0)
-            else:
-                hard_targets_batch.append(0)
 
-        teacher_probs_tensor = torch.stack(teacher_probs_batch)  # (batch, vocab)
-        hard_targets_tensor = torch.tensor(hard_targets_batch, device=device)
+            teacher_probs_tensor = torch.stack(teacher_probs_batch)  # (batch, vocab)
+            hard_targets_tensor = torch.tensor(hard_targets_batch, device=device)
 
-        # Get student logits at move position
-        # For causal LM, logits at position t predict token t+1.
-        # We want logits at the <uci_move> tag position to predict the move token.
-        move_pos_found_ratio = None
-        if move_positions is not None:
-            move_positions = move_positions.to(device)
-            valid_mask = (move_positions >= 0) & (move_positions < seq_len)
-            move_pos_found_ratio = valid_mask.float().mean().item()
-            if valid_mask.any():
-                if batch_size == 1 and move_positions.numel() != batch_size:
-                    # Packed batch: a single flattened sequence that contains multiple
-                    # original samples. All move positions belong to batch item 0.
-                    student_logits = logits[0, move_positions[valid_mask]]
+            # Get student logits at move position
+            # For causal LM, logits at position t predict token t+1.
+            # We want logits at the <uci_move> tag position to predict the move token.
+            move_pos_found_ratio = None
+            if move_positions is not None:
+                move_positions = move_positions.to(device)
+                valid_mask = (move_positions >= 0) & (move_positions < seq_len)
+                move_pos_found_ratio = valid_mask.float().mean().item()
+                if valid_mask.any():
+                    if batch_size == 1 and move_positions.numel() != batch_size:
+                        # Packed batch: a single flattened sequence that contains multiple
+                        # original samples. All move positions belong to batch item 0.
+                        student_logits = logits[0, move_positions[valid_mask]]
+                    else:
+                        # Standard batch: one move position per batch item.
+                        batch_indices = torch.arange(batch_size, device=device)[valid_mask]
+                        student_logits = logits[batch_indices, move_positions[valid_mask]]
+                    teacher_probs_tensor = teacher_probs_tensor[valid_mask]
+                    hard_targets_tensor = hard_targets_tensor[valid_mask]
                 else:
-                    # Standard batch: one move position per batch item.
-                    batch_indices = torch.arange(batch_size, device=device)[valid_mask]
-                    student_logits = logits[batch_indices, move_positions[valid_mask]]
-                teacher_probs_tensor = teacher_probs_tensor[valid_mask]
-                hard_targets_tensor = hard_targets_tensor[valid_mask]
+                    student_logits = None
             else:
-                student_logits = None
-        else:
-            # Fallback: use last non-padding position (less reliable)
-            attention_mask = inputs.get('attention_mask')
-            if attention_mask is not None:
-                seq_lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
-                batch_indices = torch.arange(batch_size, device=device)
-                student_logits = logits[batch_indices, seq_lengths]  # (batch, vocab)
-            else:
-                student_logits = logits[:, -2, :]  # (batch, vocab)
+                # Fallback: use last non-padding position (less reliable)
+                attention_mask = inputs.get('attention_mask')
+                if attention_mask is not None:
+                    seq_lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
+                    batch_indices = torch.arange(batch_size, device=device)
+                    student_logits = logits[batch_indices, seq_lengths]  # (batch, vocab)
+                else:
+                    student_logits = logits[:, -2, :]  # (batch, vocab)
 
-        # Compute distillation loss (KL on move position)
-        if student_logits is None:
-            kl_loss = torch.tensor(0.0, device=device)
-            loss_dict = {'soft_loss': 0.0, 'hard_loss': 0.0}
-        else:
-            kl_loss, loss_dict = self.distill_loss_fn(
-                student_logits=student_logits,
-                teacher_probs=teacher_probs_tensor,
-                hard_targets=hard_targets_tensor,
-            )
+            # Compute distillation loss (KL on move position)
+            if student_logits is None:
+                kl_loss = torch.tensor(0.0, device=device)
+                loss_dict = {'soft_loss': 0.0, 'hard_loss': 0.0}
+            else:
+                kl_loss, loss_dict = self.distill_loss_fn(
+                    student_logits=student_logits,
+                    teacher_probs=teacher_probs_tensor,
+                    hard_targets=hard_targets_tensor,
+                )
 
         # STEP 4: Combine losses
         # ce_loss: Teaches thinking text via cross-entropy
@@ -572,6 +707,27 @@ def load_global_step_from_checkpoint(checkpoint_path: Path) -> Optional[int]:
     return None
 
 
+def validate_trainer_checkpoint(checkpoint_path: Path) -> List[str]:
+    """
+    Return a list of missing files required for full Trainer resume.
+
+    Hugging Face Trainer resumes *model + optimizer + scheduler + state* when the
+    checkpoint directory contains these artifacts.
+
+    This does not validate shard completeness; it is a quick sanity check to
+    catch the most common "resume didn't work" causes (wrong path, partial copy,
+    or `save_only_model=True`).
+    """
+
+    required = [
+        "trainer_state.json",
+        "optimizer.pt",
+        "scheduler.pt",
+    ]
+    missing = [name for name in required if not (checkpoint_path / name).exists()]
+    return missing
+
+
 def setup_model_and_tokenizer(
     config: Dict[str, Any],
     use_liger: bool = True,
@@ -644,52 +800,6 @@ def setup_model_and_tokenizer(
     return model, tokenizer
 
 
-def generate_all_uci_moves() -> List[str]:
-    """Generate all UCI move strings, including promotions on back ranks."""
-    moves = []
-    for from_sq in range(64):
-        for to_sq in range(64):
-            if from_sq == to_sq:
-                continue
-            from_str = chess.SQUARE_NAMES[from_sq]
-            to_str = chess.SQUARE_NAMES[to_sq]
-            uci_move = f"{from_str}{to_str}"
-            moves.append(uci_move)
-
-            to_rank = chess.square_rank(to_sq)
-            if to_rank in (0, 7):
-                for promo in ['q', 'r', 'b', 'n']:
-                    moves.append(f"{uci_move}{promo}")
-
-    return moves
-
-
-def add_distillation_tokens(
-    tokenizer,
-    model,
-    add_move_tokens: bool = True,
-    all_uci_moves: Optional[List[str]] = None,
-) -> Dict[str, int]:
-    """Add distillation tags and optional UCI move tokens to tokenizer/model."""
-    added = {'special_tokens': 0, 'move_tokens': 0}
-
-    special_tokens = {
-        "additional_special_tokens": ["<think>", "</think>", "<uci_move>", "</uci_move>"]
-    }
-    added['special_tokens'] = tokenizer.add_special_tokens(special_tokens)
-
-    if add_move_tokens:
-        if all_uci_moves is None:
-            all_uci_moves = generate_all_uci_moves()
-        added['move_tokens'] = tokenizer.add_tokens(all_uci_moves, special_tokens=False)
-
-    if added['special_tokens'] or added['move_tokens']:
-        # Pad vocab size to multiple of 64 for optimal tensor core utilization
-        model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
-
-    return added
-
-
 def log_tokenizer_stats(tokenizer, all_uci_moves: List[str], sample_moves: Optional[List[str]] = None) -> None:
     """Log how the tokenizer splits UCI moves and tag-wrapped moves."""
     if sample_moves is None:
@@ -716,29 +826,6 @@ def log_tokenizer_stats(tokenizer, all_uci_moves: List[str], sample_moves: Optio
         print(f"Move tokenization: {move}")
         print(f"  ids: {move_ids}")
         print(f"  tokens: {move_tokens}")
-
-
-def build_move_to_token_id(tokenizer, all_uci_moves: Optional[List[str]] = None) -> Dict[str, int]:
-    """
-    Build mapping from UCI moves to token IDs.
-
-    This allows the distillation loss to map Stockfish move probabilities
-    to the correct positions in the vocabulary.
-    """
-    move_to_token = {}
-
-    # Generate all possible UCI moves
-    if all_uci_moves is None:
-        all_uci_moves = generate_all_uci_moves()
-
-    for uci_move in all_uci_moves:
-        tokens = tokenizer.encode(uci_move, add_special_tokens=False)
-        unk_id = getattr(tokenizer, "unk_token_id", None)
-        if len(tokens) == 1 and (unk_id is None or tokens[0] != unk_id):
-            move_to_token[uci_move] = tokens[0]
-
-    print(f"Built move-to-token mapping: {len(move_to_token)} moves")
-    return move_to_token
 
 
 def load_distillation_dataset(
@@ -914,10 +1001,20 @@ def create_distillation_trainer(
             tokenizer=tokenizer,
         )
         trace_status = reasoning_trace_generator.status()
+        opening_detail = ""
+        if not trace_status.get("opening_available"):
+            opening_detail = trace_status.get("opening_error") or "unavailable"
+        tablebase_detail = ""
+        if not trace_status.get("tablebase_available"):
+            tablebase_detail = trace_status.get("tablebase_error") or "unavailable"
         print(
             "Reasoning trace enabled: "
-            f"opening={trace_status.get('opening_available')}, "
-            f"tablebase={trace_status.get('tablebase_available')}, "
+            f"opening={trace_status.get('opening_available')}"
+            + (f" ({opening_detail})" if opening_detail else "")
+            + ", "
+            f"tablebase={trace_status.get('tablebase_available')}"
+            + (f" ({tablebase_detail})" if tablebase_detail else "")
+            + ", "
             f"force_best={force_best_move}"
         )
     distill_config = config.get('distillation', {})
@@ -1076,6 +1173,7 @@ def create_distillation_trainer(
         data_collator=data_collator,
         distill_loss_fn=distill_loss_fn,
         move_to_token_id=move_to_token_id,
+        move_distill_mode=distill_config.get("move_distill_mode", "move_token"),
         ce_loss_enabled=distill_config.get('ce_loss_enabled', True),
         kl_weight=distill_config.get('kl_weight', 1.0),
         use_cce=distill_config.get('use_cce', True),
@@ -1142,6 +1240,21 @@ def main():
         print(f"Warning: Checkpoint {resume_checkpoint} not found")
         resume_checkpoint = None
 
+    stream_skip_examples = 0
+
+    if resume_checkpoint:
+        checkpoint_path = Path(resume_checkpoint)
+        global_step = load_global_step_from_checkpoint(checkpoint_path)
+        missing = validate_trainer_checkpoint(checkpoint_path)
+        print(f"Resume checkpoint: {checkpoint_path}")
+        print(f"  trainer_state global_step: {global_step if global_step is not None else 'unknown'}")
+        if missing:
+            print(
+                "Warning: checkpoint is missing Trainer state files: "
+                + ", ".join(missing)
+                + ". Resume may restart optimizer/scheduler and step counters."
+            )
+
     # Get config sections
     training_config = config.get('training', {})
     distill_config = config.get('distillation', {})
@@ -1161,6 +1274,7 @@ def main():
     print(f"CE loss (thinking): {'ENABLED' if ce_loss_enabled else 'DISABLED'}")
     print(f"Cut Cross Entropy: {'ENABLED' if use_cce else 'DISABLED'}")
     print(f"KL loss (move dist): {loss_type.upper()} divergence, weight={kl_weight}")
+    print(f"Move distill mode: {distill_config.get('move_distill_mode', 'move_token')}")
     print(f"Liger Kernel: {'enabled' if use_liger and LIGER_LOSS_AVAILABLE else 'disabled'}")
     print(f"Temperature: {distill_config.get('temperature', 1.0)}")
     if prob_mode == 'wdl':
@@ -1178,6 +1292,23 @@ def main():
     print(f"torch.compile: {'ENABLED' if use_torch_compile else 'disabled'}")
     print(f"Padding-free packing: {'ENABLED' if padding_free else 'disabled'}")
     print("=" * 60)
+
+    if args.streaming and resume_checkpoint:
+        global_step = load_global_step_from_checkpoint(Path(resume_checkpoint))
+        if global_step is None:
+            print(
+                "Warning: streaming resume could not read checkpoint global_step; "
+                "stream will restart near the beginning."
+            )
+        else:
+            per_device_batch = int(training_config.get("per_device_train_batch_size", 4))
+            grad_accum = int(training_config.get("gradient_accumulation_steps", 1))
+            stream_skip_examples = global_step * per_device_batch * grad_accum
+            if stream_skip_examples > 0:
+                print(
+                    f"Streaming resume: will skip {stream_skip_examples:,} streamed examples "
+                    f"(global_step={global_step}, batch={per_device_batch}, grad_accum={grad_accum})."
+                )
 
     # Store in config for trainer to use
     distill_config['ce_loss_enabled'] = ce_loss_enabled
@@ -1200,18 +1331,28 @@ def main():
         )
         padding_free = False
 
-    # Add distillation tokens and build move-to-token mapping
-    all_uci_moves = generate_all_uci_moves()
-    added = add_distillation_tokens(
+    # Add chess tokens and build move-to-token mapping (if using move-vocab distillation).
+    tokenizer_config = config.get("tokenizer", {})
+    mode_str = tokenizer_config.get("chess_mode")
+    if not mode_str:
+        mode_str = "tags_and_moves" if distill_config.get("add_uci_move_tokens", True) else "tags_only"
+    if mode_str not in ("tags_only", "tags_and_moves"):
+        raise ValueError(f"tokenizer.chess_mode must be 'tags_only' or 'tags_and_moves' (got {mode_str!r})")
+    mode: ChessTokenizerMode = mode_str
+    add_think_tags = bool(tokenizer_config.get("add_think_tags", True))
+
+    all_uci_moves = generate_all_uci_moves() if mode == "tags_and_moves" else None
+    added = add_chess_tokens(
         tokenizer=tokenizer,
         model=model,
-        add_move_tokens=distill_config.get('add_uci_move_tokens', True),
+        mode=mode,
+        add_think_tags=add_think_tags,
         all_uci_moves=all_uci_moves,
     )
     if added['special_tokens'] or added['move_tokens']:
         print(
             f"Added tokens: {added['special_tokens']} special, "
-            f"{added['move_tokens']} UCI move tokens"
+            f"{added['move_tokens']} UCI move tokens (mode={mode})"
         )
 
     total_params = sum(p.numel() for p in model.parameters())
@@ -1220,11 +1361,16 @@ def main():
     print(f"Trainable parameters: {trainable_params:,}")
     print_gpu_memory()
 
-    move_to_token_id = build_move_to_token_id(tokenizer, all_uci_moves=all_uci_moves)
-    print(f"Move vocab coverage: {len(move_to_token_id)}/{len(all_uci_moves)}")
+    if mode == "tags_and_moves":
+        total_moves = len(all_uci_moves or [])
+        move_to_token_id = build_move_to_token_id(tokenizer=tokenizer, all_uci_moves=all_uci_moves)
+        print(f"Move vocab coverage: {len(move_to_token_id)}/{total_moves}")
+    else:
+        move_to_token_id = {}
+        print("Move vocab coverage: 0 (tags_only mode)")
 
     if distill_config.get('log_tokenizer_stats', False):
-        log_tokenizer_stats(tokenizer, all_uci_moves)
+        log_tokenizer_stats(tokenizer, generate_all_uci_moves())
 
     # Create distillation loss function
     # alpha=1.0 means pure KL loss (no additional CE on move token)
@@ -1247,23 +1393,14 @@ def main():
         streaming=args.streaming,
     )
 
-    if args.streaming and resume_checkpoint:
-        global_step = load_global_step_from_checkpoint(Path(resume_checkpoint))
-        if global_step is None:
-            print(
-                f"Warning: Could not read global_step from {resume_checkpoint}\\trainer_state.json; "
-                "streaming resume will restart near the beginning of the stream."
-            )
+    if args.streaming and stream_skip_examples > 0:
+        if hasattr(train_dataset, "skip"):
+            train_dataset = train_dataset.skip(stream_skip_examples)
         else:
-            per_device_batch = int(training_config.get("per_device_train_batch_size", 4))
-            grad_accum = int(training_config.get("gradient_accumulation_steps", 1))
-            skip_examples = global_step * per_device_batch * grad_accum
-            if skip_examples > 0 and hasattr(train_dataset, "skip"):
-                print(
-                    f"Streaming resume: checkpoint global_step={global_step}, "
-                    f"skipping {skip_examples:,} streamed examples to avoid repeating data."
-                )
-                train_dataset = train_dataset.skip(skip_examples)
+            print(
+                "Warning: train_dataset does not support `.skip()`. "
+                "Streaming resume cannot advance the stream; you may repeat early samples."
+            )
 
     if hasattr(train_dataset, '__len__'):
         print(f"Train dataset size: {len(train_dataset):,}")

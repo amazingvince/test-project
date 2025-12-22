@@ -311,25 +311,37 @@ class DistillationCollator:
             # Tokenize
             full_tokens = self.tokenizer(
                 full_text,
-                truncation=True,
-                max_length=self.max_length,
+                truncation=False,
                 return_tensors=None,
             )
             
             prompt_tokens = self.tokenizer(
                 prompt_text,
-                truncation=True,
-                max_length=self.max_length,
+                truncation=False,
                 return_tensors=None,
             )
             
             input_ids = full_tokens['input_ids']
-            attention_mask = full_tokens['attention_mask']
+            attention_mask = full_tokens.get('attention_mask') or [1] * len(input_ids)
             
             # Create labels with prompt masking
             labels = input_ids.copy()
             prompt_length = len(prompt_tokens['input_ids'])
-            
+
+            if len(input_ids) > self.max_length:
+                overflow = len(input_ids) - self.max_length
+                removed_from_assistant = max(0, overflow - prompt_length)
+                if removed_from_assistant:
+                    warnings.warn(
+                        "Example exceeded max_length; removed "
+                        f"{removed_from_assistant} assistant tokens (max_length={self.max_length}). "
+                        "Consider reducing reasoning_trace.max_trace_tokens or increasing model.max_seq_length."
+                    )
+                input_ids = input_ids[overflow:]
+                attention_mask = attention_mask[overflow:]
+                labels = input_ids.copy()
+                prompt_length = max(0, prompt_length - overflow)
+             
             for i in range(min(prompt_length, len(labels))):
                 labels[i] = -100  # Ignore prompt tokens
             
@@ -589,23 +601,35 @@ class PrecomputedDistillationCollator:
         
         full_tokens = self.tokenizer(
             full_text,
-            truncation=True,
-            max_length=self.max_length,
+            truncation=False,
             return_tensors=None,
         )
-        
+         
         prompt_tokens = self.tokenizer(
             prompt_text,
-            truncation=True,
-            max_length=self.max_length,
+            truncation=False,
             return_tensors=None,
         )
-        
+         
         input_ids = full_tokens['input_ids']
-        attention_mask = full_tokens['attention_mask']
+        attention_mask = full_tokens.get('attention_mask') or [1] * len(input_ids)
         labels = input_ids.copy()
 
         prompt_length = len(prompt_tokens['input_ids'])
+        if len(input_ids) > self.max_length:
+            overflow = len(input_ids) - self.max_length
+            removed_from_assistant = max(0, overflow - prompt_length)
+            if removed_from_assistant:
+                warnings.warn(
+                    "Example exceeded max_length; removed "
+                    f"{removed_from_assistant} assistant tokens (max_length={self.max_length}). "
+                    "Consider reducing reasoning_trace.max_trace_tokens or increasing model.max_seq_length."
+                )
+            input_ids = input_ids[overflow:]
+            attention_mask = attention_mask[overflow:]
+            labels = input_ids.copy()
+            prompt_length = max(0, prompt_length - overflow)
+
         for i in range(min(prompt_length, len(labels))):
             labels[i] = -100
         

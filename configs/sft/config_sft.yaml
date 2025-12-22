@@ -17,6 +17,12 @@ model:
   dtype: "bfloat16"  # BF16 is optimal for modern GPU architectures
   attn_implementation: "flash_attention_2"  # Use Flash Attention 2
 
+# Tokenizer augmentation
+tokenizer:
+  # SFT does not require the 8k move-token vocabulary.
+  chess_mode: "tags_only"
+  add_think_tags: false
+
 # =============================================================================
 # Training Configuration
 # =============================================================================

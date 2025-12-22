@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -23,6 +24,7 @@ from src.utils.chess_utils import (
     get_first_legal_move,
     get_legal_moves_uci,
     render_board_utf,
+    trim_generated_token_ids,
     validate_uci_move,
 )
 from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
@@ -299,19 +301,41 @@ class FastChessEvalCallback(TrainerCallback):
         model.eval()
         self.tokenizer.padding_side = "left"
 
+        eval_started = time.perf_counter()
+        gen_seconds = 0.0
+        stockfish_seconds = 0.0
+        used_max_new_tokens: Optional[int] = None
+        prompt_truncations = 0
+
         try:
             results: List[Dict[str, Any]] = []
             positions = self.eval_positions
 
-            max_input_length = self.max_total_tokens - self.max_new_tokens
             logger.debug(
-                "Chess eval: max_total_tokens=%s, max_input=%s, max_new_tokens=%s",
-                self.max_total_tokens, max_input_length, self.max_new_tokens
+                "Chess eval: max_total_tokens=%s, max_new_tokens=%s",
+                self.max_total_tokens, self.max_new_tokens
             )
 
             for start in range(0, len(positions), self.eval_batch_size):
                 batch_positions = positions[start : start + self.eval_batch_size]
                 prompts, boards = _build_prompts(self.tokenizer, batch_positions)
+
+                length_meta = self.tokenizer(
+                    prompts,
+                    padding=False,
+                    truncation=False,
+                    return_length=True,
+                )
+                lengths = length_meta.get("length")
+                if lengths is None:
+                    lengths = [len(ids) for ids in length_meta["input_ids"]]
+                max_prompt_len = max(int(v) for v in lengths) if lengths else 0
+                max_new_tokens = min(self.max_new_tokens, max(1, self.max_total_tokens - max_prompt_len))
+                if max_prompt_len + max_new_tokens > self.max_total_tokens:
+                    max_new_tokens = max(1, self.max_total_tokens - max_prompt_len)
+                max_input_length = self.max_total_tokens - max_new_tokens
+                if max_input_length < max_prompt_len:
+                    prompt_truncations += 1
 
                 inputs = self.tokenizer(
                     prompts,
@@ -327,18 +351,20 @@ class FastChessEvalCallback(TrainerCallback):
                 if self.tokenizer.eos_token_id is not None:
                     eos_token_ids.append(int(self.tokenizer.eos_token_id))
                 close_tag_id = self.tokenizer.convert_tokens_to_ids("</uci_move>")
+                close_tag_token_id: Optional[int] = None
                 if (
                     isinstance(close_tag_id, int)
                     and close_tag_id >= 0
                     and (self.tokenizer.unk_token_id is None or close_tag_id != self.tokenizer.unk_token_id)
                 ):
-                    eos_token_ids.append(int(close_tag_id))
+                    close_tag_token_id = int(close_tag_id)
+                    eos_token_ids.append(close_tag_token_id)
                 eos_token_ids = list(dict.fromkeys(eos_token_ids))
 
                 generate_kwargs = dict(inputs)
                 generate_kwargs.update(
                     {
-                        "max_new_tokens": self.max_new_tokens,
+                        "max_new_tokens": max_new_tokens,
                         "do_sample": self.do_sample,
                         "pad_token_id": self.tokenizer.pad_token_id,
                         "use_cache": True,
@@ -352,7 +378,7 @@ class FastChessEvalCallback(TrainerCallback):
                         generate_kwargs["temperature"] = float(self.temperature)
                     if self.top_p is not None:
                         generate_kwargs["top_p"] = float(self.top_p)
-                    if self.top_k is not None:
+                    if self.top_k is not None and hasattr(model.generation_config, "top_k"):
                         generate_kwargs["top_k"] = int(self.top_k)
                     if self.min_p is not None and hasattr(model.generation_config, "min_p"):
                         generate_kwargs["min_p"] = float(self.min_p)
@@ -362,10 +388,24 @@ class FastChessEvalCallback(TrainerCallback):
                     generator.manual_seed(self.seed + int(step))
                     generate_kwargs["generator"] = generator
 
+                used_max_new_tokens = max_new_tokens
+                gen_started = time.perf_counter()
                 outputs = model.generate(**generate_kwargs)
+                gen_seconds += time.perf_counter() - gen_started
 
                 for i, seq in enumerate(outputs):
-                    response = self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=False)
+                    generated_ids = seq[prompt_len:].tolist()
+                    trimmed_ids = trim_generated_token_ids(
+                        generated_ids,
+                        close_tag_id=close_tag_token_id,
+                        eos_token_ids=(
+                            [int(self.tokenizer.eos_token_id)]
+                            if self.tokenizer.eos_token_id is not None
+                            else ()
+                        ),
+                        pad_token_id=self.tokenizer.pad_token_id,
+                    )
+                    response = self.tokenizer.decode(trimmed_ids, skip_special_tokens=False)
                     predicted = extract_uci_from_response(response)
                     board = boards[i]
                     target = batch_positions[i].target_move_uci
@@ -386,6 +426,7 @@ class FastChessEvalCallback(TrainerCallback):
                     )
 
             if self.stockfish_path:
+                stockfish_started = time.perf_counter()
                 indexed = [
                     (i, r["fen"], r["predicted_move"])
                     for i, r in enumerate(results)
@@ -401,19 +442,37 @@ class FastChessEvalCallback(TrainerCallback):
                             idx, cpl, is_white = fut.result()
                             results[idx]["cpl"] = cpl
                             results[idx]["is_white"] = is_white
+                stockfish_seconds += time.perf_counter() - stockfish_started
 
             metrics = _compute_basic_metrics(results)
             side_metrics = _compute_acpl_by_side(results)
 
             prefix = "final/" if final else ""
+            eval_seconds = time.perf_counter() - eval_started
             logger.info(
-                "Chess eval @ step %s: legal=%.2f%% acc=%.2f%% acpl=%s (n=%s)",
+                "Chess eval @ step %s: legal=%.2f%% acc=%.2f%% acpl=%s (n=%s) time=%.1fs (gen=%.1fs sf=%.1fs)",
                 step,
                 metrics.legal_move_rate * 100,
                 metrics.accuracy * 100,
                 f"{metrics.acpl:.1f}" if metrics.acpl is not None else "n/a",
                 metrics.acpl_n,
+                eval_seconds,
+                gen_seconds,
+                stockfish_seconds,
             )
+            if prompt_truncations:
+                logger.warning(
+                    "Chess eval prompt truncations: %s batches truncated (max_total_tokens=%s).",
+                    prompt_truncations,
+                    self.max_total_tokens,
+                )
+            if used_max_new_tokens is not None and used_max_new_tokens != self.max_new_tokens:
+                logger.warning(
+                    "Chess eval reduced max_new_tokens from %s to %s to fit prompt budget (max_total_tokens=%s).",
+                    self.max_new_tokens,
+                    used_max_new_tokens,
+                    self.max_total_tokens,
+                )
             if side_metrics["acpl_white"] is not None or side_metrics["acpl_black"] is not None:
                 logger.info(
                     "  ACPL by side: white=%s (n=%s) black=%s (n=%s)",
@@ -455,6 +514,9 @@ class FastChessEvalCallback(TrainerCallback):
                     payload: Dict[str, float] = {
                         f"{prefix}chess/legal_move_rate": metrics.legal_move_rate,
                         f"{prefix}chess/accuracy": metrics.accuracy,
+                        f"{prefix}chess/eval_seconds": eval_seconds,
+                        f"{prefix}chess/eval_gen_seconds": gen_seconds,
+                        f"{prefix}chess/eval_stockfish_seconds": stockfish_seconds,
                     }
                     if metrics.acpl is not None:
                         payload[f"{prefix}chess/acpl"] = metrics.acpl

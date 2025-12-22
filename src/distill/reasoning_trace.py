@@ -554,6 +554,10 @@ class OpeningBook:
         self._ensure_loaded()
         return bool(self._fen_to_opening)
 
+    def load_error(self) -> Optional[str]:
+        self._ensure_loaded()
+        return self._load_error
+
     def lookup(self, board: chess.Board) -> Optional[OpeningInfo]:
         self._ensure_loaded()
         if not self._fen_to_opening:
@@ -663,6 +667,10 @@ class TablebaseProbe:
     def is_available(self) -> bool:
         return self._ensure_loaded()
 
+    def load_error(self) -> Optional[str]:
+        self._ensure_loaded()
+        return self._load_error
+
     def probe(self, board: chess.Board) -> Optional[TablebaseInfo]:
         if len(board.piece_map()) > 7:
             return None
@@ -730,9 +738,15 @@ class ReasoningTraceGenerator:
         self._tablebase = TablebaseProbe(tablebase_paths)
 
     def status(self) -> Dict[str, Any]:
+        opening_available = self._opening.is_available()
+        tablebase_available = self._tablebase.is_available()
         return {
-            "opening_available": self._opening.is_available(),
-            "tablebase_available": self._tablebase.is_available(),
+            "opening_available": opening_available,
+            "opening_error": None if opening_available else self._opening.load_error(),
+            "opening_paths": [str(p) for p in self._opening.paths],
+            "tablebase_available": tablebase_available,
+            "tablebase_error": None if tablebase_available else self._tablebase.load_error(),
+            "tablebase_paths": [str(p) for p in self._tablebase.paths],
         }
 
     def generate(

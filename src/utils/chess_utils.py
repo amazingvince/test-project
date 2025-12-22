@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import chess
 
@@ -130,6 +130,68 @@ def extract_uci_from_response(response: str) -> Optional[str]:
     if not match:
         return None
     return match.group(1).lower()
+
+
+def trim_generated_token_ids(
+    generated_ids: List[int],
+    *,
+    close_tag_id: Optional[int] = None,
+    eos_token_ids: Sequence[int] = (),
+    pad_token_id: Optional[int] = None,
+) -> List[int]:
+    """
+    Trim a generated token sequence at the first stop token.
+
+    Hugging Face `generate()` pads shorter generations to match the longest item
+    in a batch. When `pad_token_id == eos_token_id` this can appear as repeated
+    `<|endoftext|>` tokens in decoded output.
+
+    This helper:
+    - cuts at the first `</uci_move>` token if present (inclusive)
+    - otherwise cuts at the first EOS token (exclusive)
+    - strips trailing PAD/EOS tokens
+    """
+
+    if not generated_ids:
+        return []
+
+    close_tag_id = int(close_tag_id) if close_tag_id is not None else None
+    if close_tag_id is not None and close_tag_id < 0:
+        close_tag_id = None
+    eos_set = set(int(v) for v in eos_token_ids if v is not None)
+    if close_tag_id is not None:
+        eos_set.discard(close_tag_id)
+
+    stop_idx: Optional[int] = None
+    include_stop = False
+
+    if close_tag_id is not None:
+        try:
+            stop_idx = generated_ids.index(close_tag_id)
+            include_stop = True
+        except ValueError:
+            stop_idx = None
+
+    if eos_set:
+        for idx, token_id in enumerate(generated_ids):
+            if token_id in eos_set:
+                if stop_idx is None or idx < stop_idx:
+                    stop_idx = idx
+                    include_stop = False
+                break
+
+    if stop_idx is not None:
+        generated_ids = generated_ids[: stop_idx + (1 if include_stop else 0)]
+
+    strip_ids = set()
+    if pad_token_id is not None:
+        strip_ids.add(int(pad_token_id))
+    strip_ids.update(eos_set)
+
+    while generated_ids and generated_ids[-1] in strip_ids:
+        generated_ids.pop()
+
+    return generated_ids
 
 
 def position_from_board(

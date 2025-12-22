@@ -519,6 +519,15 @@ def process_positions_batch(
         List of position dicts with added evaluation data
     """
     from .stockfish_eval import StockfishEvaluator
+
+    cfg = config or {}
+    data_cfg = cfg.get("data", {})
+    target_move_policy = data_cfg.get("target_move", "played")
+    if target_move_policy not in ("played", "best"):
+        raise ValueError(
+            "data.target_move must be 'played' or 'best' "
+            f"(got {target_move_policy!r})"
+        )
     
     def process_one(pos_dict):
         evaluator = StockfishEvaluator(
@@ -529,12 +538,19 @@ def process_positions_batch(
         try:
             board = chess.Board(pos_dict['fen'])
             eval_data = analyze_position_with_stockfish(board, evaluator, multipv)
-            
+
+            played_move_uci = pos_dict["target_move_uci"]
+            target_move_uci = played_move_uci
+            if target_move_policy == "best":
+                best = eval_data.get("best_move_uci")
+                if best:
+                    target_move_uci = best
+             
             # Create position object
             position = ChessPositionWithEval(
                 fen=pos_dict['fen'],
                 legal_moves_uci=pos_dict.get('legal_moves_uci', get_legal_moves_uci(board)),
-                target_move_uci=pos_dict['target_move_uci'],
+                target_move_uci=target_move_uci,
                 first_legal_move=pos_dict.get('first_legal_move', get_first_legal_move(board) or ''),
                 board_utf=pos_dict.get('board_utf', render_board_utf(board)),
                 side_to_move=pos_dict.get('side_to_move', "White" if board.turn else "Black"),
@@ -562,9 +578,22 @@ def process_positions_batch(
                 max_weight=loss_config.get('max_weight', 2.0),
                 **loss_config
             )
-            
-            return asdict(position)
-            
+
+            output = asdict(position)
+            if target_move_uci != played_move_uci:
+                output["source_target_move_uci"] = played_move_uci
+                output["source_target_move_rank"] = None
+                output["source_target_move_cp_loss"] = None
+                for i, mv in enumerate(output.get("move_evaluations") or []):
+                    if mv.get("uci") == played_move_uci:
+                        output["source_target_move_rank"] = i + 1
+                        output["source_target_move_cp_loss"] = (
+                            int(output.get("best_score_cp") or 0) - int(mv.get("centipawn") or 0)
+                        )
+                        break
+
+            return output
+             
         finally:
             evaluator.close()
     
@@ -861,6 +890,62 @@ def preprocess_and_save_with_eval(
     )
     
     logger.info("Analyzed %s positions", f"{len(analyzed_positions):,}")
+
+    reasoning_trace_cfg = config.get("reasoning_trace", {})
+    if reasoning_trace_cfg.get("enabled"):
+        from src.sft.formatting_sft import add_messages_with_reasoning_trace
+        from src.distill.reasoning_trace import ReasoningTraceGenerator
+        from src.utils.chess_tokenizer import add_chess_tokens, generate_all_uci_moves
+
+        formatting_cfg = config.get("formatting", {})
+        include_board = bool(formatting_cfg.get("include_board", False))
+
+        always_choose_best = bool(
+            reasoning_trace_cfg.get("always_choose_best_move", False)
+            or data_config.get("target_move") == "best"
+        )
+
+        distill_cfg = config.get("distillation", {})
+        min_probability = float(distill_cfg.get("min_probability", 0.001))
+        stockfish_temperature = float(distill_cfg.get("stockfish_temperature", 100.0))
+
+        trace_tokenizer = None
+        model_name = config.get("model", {}).get("name")
+        if model_name:
+            try:
+                from transformers import AutoTokenizer
+
+                trace_tokenizer = AutoTokenizer.from_pretrained(model_name)
+                tok_cfg = config.get("tokenizer", {})
+                mode_str = tok_cfg.get("chess_mode", "tags_only")
+                if mode_str in ("tags_only", "tags_and_moves"):
+                    all_moves = generate_all_uci_moves() if mode_str == "tags_and_moves" else None
+                    add_chess_tokens(
+                        tokenizer=trace_tokenizer,
+                        model=None,
+                        mode=mode_str,
+                        add_think_tags=bool(tok_cfg.get("add_think_tags", False)),
+                        all_uci_moves=all_moves,
+                    )
+            except Exception as exc:
+                warnings.warn(f"Could not load tokenizer for reasoning-trace budgeting: {exc}")
+                trace_tokenizer = None
+
+        trace_generator = ReasoningTraceGenerator(reasoning_trace_cfg, tokenizer=trace_tokenizer)
+        for idx, ex in enumerate(analyzed_positions):
+            try:
+                ex.update(
+                    add_messages_with_reasoning_trace(
+                        ex,
+                        reasoning_trace_generator=trace_generator,
+                        include_board=include_board,
+                        always_choose_best_move=always_choose_best,
+                        min_probability=min_probability,
+                        stockfish_temperature=stockfish_temperature,
+                    )
+                )
+            except Exception as exc:
+                warnings.warn(f"Failed to build reasoning-trace messages for example #{idx}: {exc}")
     
     # Step 3: Shuffle and save
     logger.info("Step 3/3: shuffling and saving...")
