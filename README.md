@@ -62,6 +62,7 @@ More details: `eval/README.md`
 - End-to-end report (prompt + trace samples): `python scripts/gut_check_report.py --dataset ./data/chess_distill --output ./reports/gut_check_report.md`
 - Download openings: `python scripts/download_openings.py --output-dir ./data/openings`
 - Download tablebases: `python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5`
+- (Optional) Task-arithmetic model merge: `python model_merger.py --chess-model ./outputs/chess-distill-final --output ./outputs/chess-merged --scale 0.5`
 
 More details: `scripts/README.md`
 

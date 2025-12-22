@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-Optimized Chess LLM SFT Training Script - V3
+Chess LLM supervised fine-tuning (SFT) training script.
 
-Key features:
-- Cut Cross Entropy for memory-efficient loss computation
-- Liger Kernels for RoPE, RMSNorm, SwiGLU (NOT cross entropy)
-- Proper prompt masking: only compute loss on assistant response
-- Sample-level weighting (not token-level)
-- Correct gradient accumulation handling
+Trains a chat model to output a move (wrapped in `<uci_move>...</uci_move>`)
+given a position prompt. The data collator masks the prompt so the loss is
+computed only on the assistant response.
 
-Usage:
-    python sft/train.py --config configs/sft/config_sft.yaml
-    python sft/train.py --config configs/sft/config_sft.yaml --debug
+Supports optional performance features when installed:
+- Cut Cross Entropy (CCE) for reduced activation memory
+- Liger kernels for select fused ops (not cross entropy)
 """
 
 import os
@@ -347,8 +344,6 @@ class WeightedCCETrainer(Trainer):
         # After shift=1: labels[..., 1:] is used, so seq becomes seq-1
         shift_labels = labels[..., 1:].contiguous()
         valid_mask = (shift_labels != -100)
-        if self.processing_class.pad_token_id is not None:
-            valid_mask = valid_mask & (shift_labels != self.processing_class.pad_token_id)
         
         # Count valid tokens per sample (for normalization)
         valid_tokens_per_sample = valid_mask.sum(dim=1).float().clamp(min=1)
@@ -400,8 +395,6 @@ class WeightedCCETrainer(Trainer):
         
         # Valid token mask
         valid_mask = (shift_labels != -100)
-        if self.processing_class.pad_token_id is not None:
-            valid_mask = valid_mask & (shift_labels != self.processing_class.pad_token_id)
         
         valid_tokens_per_sample = valid_mask.sum(dim=1).float().clamp(min=1)
         
@@ -920,10 +913,16 @@ def main():
                 tokenizer=tokenizer,
                 eval_batch_size=training_config.get('chess_eval_batch_size', 32),
                 max_new_tokens=training_config.get('chess_eval_max_new_tokens', 64),
+                max_total_tokens=training_config.get(
+                    "chess_eval_max_total_tokens",
+                    config.get("model", {}).get("max_seq_length", 2048),
+                ),
                 eval_every_n_steps=training_config.get('chess_eval_steps', 500),
                 stockfish_path=stockfish_path,
                 stockfish_workers=eval_config.get('stockfish_workers', 8),
                 stockfish_depth=eval_config.get('stockfish_depth', 10),
+                print_samples=training_config.get("chess_eval_print_samples", 0),
+                print_max_chars=training_config.get("chess_eval_print_max_chars", 600),
             )
             print(f"Chess eval callback: {len(eval_positions)} positions")
             if stockfish_path:

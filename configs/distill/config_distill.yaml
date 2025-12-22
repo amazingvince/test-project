@@ -12,7 +12,7 @@
 
 model:
   name: "Qwen/Qwen3-0.6B"
-  max_seq_length: 1024
+  max_seq_length: 2048
   attn_implementation: "flash_attention_2"
   torch_dtype: "bfloat16"
 
@@ -44,11 +44,21 @@ training:
   run_name: "chess-policy-distill-5090"
 
   # Chess eval generation
-  chess_eval_max_new_tokens: 128
+  chess_eval_max_new_tokens: 1024
+  chess_eval_max_total_tokens: 2048
+  chess_eval_print_samples: 3
+  chess_eval_print_max_chars: 600
 
   # Performance optimizations
   torch_compile: false  # Enable torch.compile for faster training (may have warm-up overhead)
-  use_unpad: false  # Flash Attention packing - concatenate sequences with position_ids (up to 2x throughput)
+
+  # Collation
+  # - When `use_unpad=true`, we pack the batch into a single flattened sequence and rely on
+  #   FlashAttention2 varlen support via `position_ids` (like HF `DataCollatorWithFlattening`).
+  # - When `use_unpad=false`, we pad each batch to a common length and optionally round up for tensor cores.
+  use_unpad: false  # Padding-free packing for FlashAttention2
+  pad_to_multiple_of: 8  # Only used when use_unpad=false (set to null for no rounding)
+  return_flash_attn_kwargs: true  # Provide cu_seq_lens/max_length to avoid torch.compile scalar captures
 
   # Saving
   save_steps: 500

@@ -9,6 +9,7 @@ training-script setup (kernel patches, torch flags, etc.).
 from __future__ import annotations
 
 import logging
+import random
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -29,7 +30,7 @@ from src.utils.formatting import DEFAULT_PROMPT_TEMPLATE
 logger = logging.getLogger(__name__)
 
 # Maximum total tokens (input + generation) during evaluation
-MAX_TOTAL_TOKENS = 1024
+MAX_TOTAL_TOKENS = 2048
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,30 @@ def _compute_basic_metrics(results: List[Dict[str, Any]]) -> EvalMetrics:
     )
 
 
+def _compute_acpl_by_side(results: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
+    """
+    Compute Average Centipawn Loss split by side to move.
+
+    The evaluation worker stores `is_white` based on the original position's
+    side to move. This helper summarizes ACPL for:
+    - positions where White is to play
+    - positions where Black is to play
+    """
+
+    def _mean(values: List[int]) -> Optional[float]:
+        return (sum(values) / len(values)) if values else None
+
+    white = [r["cpl"] for r in results if r.get("cpl") is not None and r.get("is_white") is True]
+    black = [r["cpl"] for r in results if r.get("cpl") is not None and r.get("is_white") is False]
+
+    return {
+        "acpl_white": _mean(white),
+        "acpl_black": _mean(black),
+        "acpl_white_n": float(len(white)),
+        "acpl_black_n": float(len(black)),
+    }
+
+
 class FastChessEvalCallback(TrainerCallback):
     """
     Periodically evaluates the model on a fixed set of chess positions.
@@ -209,6 +234,8 @@ class FastChessEvalCallback(TrainerCallback):
         stockfish_path: Optional[str] = None,
         stockfish_workers: int = 8,
         stockfish_depth: int = 10,
+        print_samples: int = 0,
+        print_max_chars: int = 600,
     ) -> None:
         self.eval_positions = list(eval_positions)
         self.tokenizer = tokenizer
@@ -219,6 +246,8 @@ class FastChessEvalCallback(TrainerCallback):
         self.stockfish_path = stockfish_path
         self.stockfish_workers = int(stockfish_workers)
         self.stockfish_depth = int(stockfish_depth)
+        self.print_samples = max(0, int(print_samples))
+        self.print_max_chars = max(0, int(print_max_chars))
         self._original_padding_side = getattr(tokenizer, "padding_side", "right")
 
         # Validate that there's room for input tokens
@@ -331,6 +360,7 @@ class FastChessEvalCallback(TrainerCallback):
                             results[idx]["is_white"] = is_white
 
             metrics = _compute_basic_metrics(results)
+            side_metrics = _compute_acpl_by_side(results)
 
             prefix = "final/" if final else ""
             logger.info(
@@ -341,12 +371,21 @@ class FastChessEvalCallback(TrainerCallback):
                 f"{metrics.acpl:.1f}" if metrics.acpl is not None else "n/a",
                 metrics.acpl_n,
             )
+            if side_metrics["acpl_white"] is not None or side_metrics["acpl_black"] is not None:
+                logger.info(
+                    "  ACPL by side: white=%s (n=%s) black=%s (n=%s)",
+                    f"{side_metrics['acpl_white']:.1f}" if side_metrics["acpl_white"] is not None else "n/a",
+                    int(side_metrics["acpl_white_n"]),
+                    f"{side_metrics['acpl_black']:.1f}" if side_metrics["acpl_black"] is not None else "n/a",
+                    int(side_metrics["acpl_black_n"]),
+                )
 
             per_source: Dict[str, List[Dict[str, Any]]] = {}
             for r in results:
                 per_source.setdefault(r["source"] or "unknown", []).append(r)
             for source, rows in sorted(per_source.items()):
                 sm = _compute_basic_metrics(rows)
+                sm_side = _compute_acpl_by_side(rows)
                 logger.info(
                     "  source=%s legal=%.2f%% acc=%.2f%% acpl=%s (n=%s)",
                     source,
@@ -355,6 +394,16 @@ class FastChessEvalCallback(TrainerCallback):
                     f"{sm.acpl:.1f}" if sm.acpl is not None else "n/a",
                     sm.acpl_n,
                 )
+                if sm_side["acpl_white"] is not None or sm_side["acpl_black"] is not None:
+                    logger.info(
+                        "    ACPL by side: white=%s (n=%s) black=%s (n=%s)",
+                        f"{sm_side['acpl_white']:.1f}" if sm_side["acpl_white"] is not None else "n/a",
+                        int(sm_side["acpl_white_n"]),
+                        f"{sm_side['acpl_black']:.1f}" if sm_side["acpl_black"] is not None else "n/a",
+                        int(sm_side["acpl_black_n"]),
+                    )
+
+            self._print_sample_outputs(results, step=step, final=final)
 
             try:
                 import wandb
@@ -366,15 +415,67 @@ class FastChessEvalCallback(TrainerCallback):
                     }
                     if metrics.acpl is not None:
                         payload[f"{prefix}chess/acpl"] = metrics.acpl
+                    if side_metrics["acpl_white"] is not None:
+                        payload[f"{prefix}chess/acpl_white"] = side_metrics["acpl_white"]
+                    if side_metrics["acpl_black"] is not None:
+                        payload[f"{prefix}chess/acpl_black"] = side_metrics["acpl_black"]
                     for source, rows in per_source.items():
                         sm = _compute_basic_metrics(rows)
+                        sm_side = _compute_acpl_by_side(rows)
                         payload[f"{prefix}chess/{source}_legal_move_rate"] = sm.legal_move_rate
                         payload[f"{prefix}chess/{source}_accuracy"] = sm.accuracy
                         if sm.acpl is not None:
                             payload[f"{prefix}chess/{source}_acpl"] = sm.acpl
+                        if sm_side["acpl_white"] is not None:
+                            payload[f"{prefix}chess/{source}_acpl_white"] = sm_side["acpl_white"]
+                        if sm_side["acpl_black"] is not None:
+                            payload[f"{prefix}chess/{source}_acpl_black"] = sm_side["acpl_black"]
                     wandb.log(payload, step=step)
             except Exception:
                 return
         finally:
             self.tokenizer.padding_side = self._original_padding_side
             model.train()
+
+    def _print_sample_outputs(self, results: List[Dict[str, Any]], *, step: int, final: bool) -> None:
+        if self.print_samples <= 0:
+            return
+        if not results:
+            return
+
+        n = min(self.print_samples, len(results))
+        rng = random.Random(step + (1 if final else 0))
+        indices = sorted(rng.sample(range(len(results)), k=n))
+
+        header = f"Chess eval samples @ step {step}"
+        if final:
+            header += " (final)"
+        print("\n" + "=" * 80)
+        print(header)
+        print("=" * 80)
+
+        for i, idx in enumerate(indices, start=1):
+            r = results[idx]
+            fen = str(r.get("fen", ""))
+            board = chess.Board(fen) if fen else None
+
+            predicted = r.get("predicted_move") or "<none>"
+            target = r.get("target_move") or "<none>"
+            source = r.get("source") or "unknown"
+            is_legal = bool(r.get("is_legal"))
+            is_correct = bool(r.get("is_correct"))
+            cpl = r.get("cpl")
+
+            print(f"\n[{i}/{n}] source={source} legal={is_legal} correct={is_correct} cpl={cpl if cpl is not None else 'n/a'}")
+            if fen:
+                print(f"FEN: {fen}")
+            if board is not None:
+                print(render_board_utf(board))
+            print(f"Target: {target}  Pred: {predicted}")
+
+            response = (r.get("response_text") or "").strip()
+            if self.print_max_chars and len(response) > self.print_max_chars:
+                response = response[: self.print_max_chars].rstrip() + "…"
+            if response:
+                print("Response:")
+                print(response)

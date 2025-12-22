@@ -335,15 +335,12 @@ class DistillationTrainer(Trainer):
             valid_mask = (move_positions >= 0) & (move_positions < seq_len)
             move_pos_found_ratio = valid_mask.float().mean().item()
             if valid_mask.any():
-                # Check if we're using Flash Attention packing (batch_size=1 but multiple move positions)
-                is_packed = (batch_size == 1 and move_positions.shape[0] > 1)
-                if is_packed:
-                    # Packed case: all sequences concatenated into one
-                    # move_positions are offsets within the single flattened sequence
-                    valid_positions = move_positions[valid_mask]
-                    student_logits = logits[0, valid_positions]  # (num_valid, vocab)
+                if batch_size == 1 and move_positions.numel() != batch_size:
+                    # Packed batch: a single flattened sequence that contains multiple
+                    # original samples. All move positions belong to batch item 0.
+                    student_logits = logits[0, move_positions[valid_mask]]
                 else:
-                    # Standard case: separate sequences per batch item
+                    # Standard batch: one move position per batch item.
                     batch_indices = torch.arange(batch_size, device=device)[valid_mask]
                     student_logits = logits[batch_indices, move_positions[valid_mask]]
                 teacher_probs_tensor = teacher_probs_tensor[valid_mask]
@@ -504,10 +501,6 @@ class DistillationTrainer(Trainer):
             # Create mask for valid tokens (not -100 after shift)
             shift_labels = labels[..., 1:].contiguous()
             valid_mask = (shift_labels != -100)
-
-            # Also exclude padding if pad_token_id is set
-            if self.processing_class.pad_token_id is not None:
-                valid_mask = valid_mask & (shift_labels != self.processing_class.pad_token_id)
 
             # Sum the losses over valid tokens
             loss_sum = (per_token_loss * valid_mask.float()).sum()
@@ -883,7 +876,7 @@ def create_distillation_trainer(
     streaming: bool = False,
     teacher: Optional[StockfishTeacher] = None,
     chess_eval_callback: Optional[TrainerCallback] = None,
-    use_unpad: bool = False,
+    padding_free: bool = False,
 ):
     """Create the distillation trainer."""
     training_config = config.get('training', {})
@@ -997,9 +990,12 @@ def create_distillation_trainer(
     )
 
     # Data collator - use streaming collator with teacher, or precomputed
-    # Flash Attention packing for efficient variable-length training
-    if use_unpad:
-        print("Flash Attention packing enabled - sequences will be concatenated with position_ids")
+    pad_to_multiple_of = training_config.get("pad_to_multiple_of", 8)
+    return_flash_attn_kwargs = training_config.get("return_flash_attn_kwargs", True)
+
+    if padding_free:
+        print("Padding-free packing enabled (FlashAttention2 + position_ids).")
+        pad_to_multiple_of = None
 
     if streaming and teacher is not None:
         print("Using streaming collator with on-the-fly Stockfish analysis")
@@ -1008,7 +1004,7 @@ def create_distillation_trainer(
             tokenizer=tokenizer,
             teacher=teacher,
             max_length=model_config.get('max_seq_length', 2048),
-            pad_to_multiple_of=8 if not use_unpad else None,
+            pad_to_multiple_of=pad_to_multiple_of,
             max_display_moves=formatting_config.get('max_display_moves', 5),
             randomize_order=formatting_config.get('randomize_order', True),
             include_soft_targets=True,
@@ -1017,14 +1013,15 @@ def create_distillation_trainer(
             source_overrides=stockfish_config.get('source_overrides'),
             reasoning_trace_generator=reasoning_trace_generator,
             force_best_move=force_best_move,
+            padding_free=padding_free,
+            return_flash_attn_kwargs=return_flash_attn_kwargs,
             seed=training_config.get('seed', 42),
-            use_flash_attn_packing=use_unpad,
         )
     else:
         data_collator = PrecomputedDistillationCollator(
             tokenizer=tokenizer,
             max_length=model_config.get('max_seq_length', 2048),
-            pad_to_multiple_of=8 if not use_unpad else None,
+            pad_to_multiple_of=pad_to_multiple_of,
             max_display_moves=formatting_config.get('max_display_moves', 5),
             randomize_order=formatting_config.get('randomize_order', True),
             pv_length=formatting_config.get('pv_length', 5),
@@ -1032,8 +1029,9 @@ def create_distillation_trainer(
             reasoning_trace_generator=reasoning_trace_generator,
             rerandomize_reasoning_trace=reasoning_trace_config.get("rerandomize_in_collator", False),
             force_best_move=force_best_move,
+            padding_free=padding_free,
+            return_flash_attn_kwargs=return_flash_attn_kwargs,
             seed=training_config.get('seed', 42),
-            use_flash_attn_packing=use_unpad,
         )
 
     callbacks = []
@@ -1085,7 +1083,7 @@ def main():
     parser.add_argument('--torch-compile', action='store_true',
                         help='Enable torch.compile for faster training')
     parser.add_argument('--unpad', action='store_true',
-                        help='Use unpadded/flash attention (requires flash_attention_2)')
+                        help='Enable padding-free packing for FlashAttention2 (like TRL padding_free)')
     parser.add_argument('--no-cce', action='store_true',
                         help='Disable Cut Cross Entropy (use standard PyTorch CE)')
     parser.add_argument('--max-steps', type=int, default=None,
@@ -1139,9 +1137,13 @@ def main():
     print(f"Floor probability: {distill_config.get('min_probability', 0.001)}")
     print(f"Flash Attention: {config.get('model', {}).get('attn_implementation', 'flash_attention_2')}")
     use_torch_compile = args.torch_compile or training_config.get('torch_compile', False)
-    use_unpad = args.unpad or training_config.get('use_unpad', False)
+    padding_free = (
+        args.unpad
+        or training_config.get("padding_free", False)
+        or training_config.get('use_unpad', False)
+    )
     print(f"torch.compile: {'ENABLED' if use_torch_compile else 'disabled'}")
-    print(f"Unpadded attention: {'ENABLED' if use_unpad else 'disabled'}")
+    print(f"Padding-free packing: {'ENABLED' if padding_free else 'disabled'}")
     print("=" * 60)
 
     # Store in config for trainer to use
@@ -1156,6 +1158,14 @@ def main():
         use_liger=LIGER_AVAILABLE and not args.no_liger,
         use_torch_compile=use_torch_compile,
     )
+
+    actual_attn = getattr(model.config, "_attn_implementation", None)
+    if padding_free and actual_attn is not None and actual_attn != "flash_attention_2":
+        print(
+            f"Warning: padding-free packing requires flash_attention_2, but model uses {actual_attn}. "
+            "Disabling padding-free packing."
+        )
+        padding_free = False
 
     # Add distillation tokens and build move-to-token mapping
     all_uci_moves = generate_all_uci_moves()
@@ -1246,10 +1256,16 @@ def main():
                 tokenizer=tokenizer,
                 eval_batch_size=training_config.get("chess_eval_batch_size", 32),
                 max_new_tokens=training_config.get("chess_eval_max_new_tokens", 128),
+                max_total_tokens=training_config.get(
+                    "chess_eval_max_total_tokens",
+                    config.get("model", {}).get("max_seq_length", 2048),
+                ),
                 eval_every_n_steps=training_config.get("chess_eval_steps", 500),
                 stockfish_path=stockfish_path,
                 stockfish_workers=eval_config.get("stockfish_workers", 8),
                 stockfish_depth=eval_config.get("stockfish_depth", 10),
+                print_samples=training_config.get("chess_eval_print_samples", 0),
+                print_max_chars=training_config.get("chess_eval_print_max_chars", 600),
             )
             print(f"Chess eval callback: {len(eval_positions)} positions")
             if stockfish_path:
@@ -1335,8 +1351,6 @@ def main():
         print(f"  Workers ready (test: best={test_analysis.best_move_san})")
 
     # Create trainer
-    print("is torch available: ",torch.cuda.is_available()) 
-    print("torch device count: ",torch.cuda.device_count())
     print("\nCreating distillation trainer...")
     trainer = create_distillation_trainer(
         model=model,
@@ -1349,7 +1363,7 @@ def main():
         streaming=args.streaming,
         teacher=teacher,
         chess_eval_callback=chess_eval_callback,
-        use_unpad=use_unpad,
+        padding_free=padding_free,
     )
 
     # Check for resume checkpoint

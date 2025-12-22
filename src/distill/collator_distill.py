@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 import chess
 import torch
 
-from .stockfish_teacher import PositionAnalysis, StockfishTeacher
+from .stockfish_teacher import StockfishTeacher
 from .formatting_distill import (
     position_to_messages_distill,
     create_distillation_example,
@@ -25,7 +25,69 @@ from .formatting_distill import (
     DISTILLATION_RESPONSE_TEMPLATE,
 )
 from .reasoning_trace import ReasoningTraceGenerator
-from ..utils.chess_utils import get_legal_moves_uci, render_board_utf
+from ..utils.chess_utils import get_first_legal_move, get_legal_moves_uci, render_board_utf
+
+
+def _flatten_for_flash_attention(
+    batch_input_ids: List[List[int]],
+    batch_labels: List[List[int]],
+    batch_move_positions: List[int],
+    *,
+    return_flash_attn_kwargs: bool,
+) -> Dict[str, Any]:
+    """
+    Flatten a batch into a single "packed" sequence for FlashAttention2 varlen.
+
+    This mirrors the behavior of Hugging Face `DataCollatorWithFlattening`:
+    - concatenates samples into shape `[1, total_tokens]`
+    - creates per-sample `position_ids` that reset to 0 at each boundary
+    - inserts a `-100` label separator at each boundary to prevent cross-sample CE loss
+
+    `move_positions` is returned as a 1D tensor of length `num_samples`, containing
+    absolute token indices in the flattened sequence (or `-1` if not found).
+    """
+    flat_input_ids: List[int] = []
+    flat_labels: List[int] = []
+    flat_position_ids: List[int] = []
+    flat_move_positions: List[int] = []
+
+    cu_seq_lens = [0]
+    max_length = 0
+
+    offset = 0
+    for input_ids, labels, move_pos in zip(batch_input_ids, batch_labels, batch_move_positions):
+        seq_len = len(input_ids)
+        max_length = max(max_length, seq_len)
+
+        flat_input_ids.extend(input_ids)
+        flat_position_ids.extend(range(seq_len))
+
+        # Boundary label separator: prevents CE loss between sequences.
+        flat_labels.append(-100)
+        flat_labels.extend(labels[1:])
+
+        flat_move_positions.append(offset + move_pos if move_pos >= 0 else -1)
+
+        offset += seq_len
+        cu_seq_lens.append(offset)
+
+    batch: Dict[str, Any] = {
+        "input_ids": torch.tensor([flat_input_ids], dtype=torch.long),
+        "labels": torch.tensor([flat_labels], dtype=torch.long),
+        "position_ids": torch.tensor([flat_position_ids], dtype=torch.long),
+        "move_positions": torch.tensor(flat_move_positions, dtype=torch.long),
+    }
+
+    if return_flash_attn_kwargs:
+        # FlashAttention expects int32 cumulative lengths.
+        cu = torch.tensor(cu_seq_lens, dtype=torch.int32)
+        batch["cu_seq_lens_q"] = cu
+        batch["cu_seq_lens_k"] = cu
+        # These must be Python ints to avoid torch.compile scalar capture issues.
+        batch["max_length_q"] = int(max_length)
+        batch["max_length_k"] = int(max_length)
+
+    return batch
 
 
 @dataclass
@@ -40,9 +102,17 @@ class DistillationCollator:
 
     This enables streaming training without pre-computing all analyses.
 
-    When `use_flash_attn_packing=True`, sequences are concatenated without
-    padding and `position_ids` are generated for Flash Attention 2's
-    `flash_attn_varlen_func`. This can provide up to 2x throughput improvement.
+    The returned batch contains `move_positions`, which points at the `<uci_move>`
+    tag token in `input_ids`. In a causal LM, logits at position `t` predict token
+    `t+1`, so the distillation loss is applied to `logits[:, move_positions]`
+    (which predicts the move token immediately following the tag).
+
+    Output shapes:
+    - Default (`padding_free=False`): returns padded tensors (`input_ids`, `attention_mask`, `labels`).
+      When using `attn_implementation="flash_attention_2"`, Transformers can unpad attention
+      internally based on `attention_mask`.
+    - Packed (`padding_free=True`): returns a single flattened sequence with `position_ids` resets
+      (and optionally `cu_seq_lens_*`/`max_length_*` kwargs). This mode is intended for FlashAttention2.
     """
 
     tokenizer: Any
@@ -57,11 +127,11 @@ class DistillationCollator:
     source_overrides: Optional[Dict[str, Dict[str, Any]]] = None
     reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
     force_best_move: bool = False
+    padding_free: bool = False
+    return_flash_attn_kwargs: bool = True
     seed: Optional[int] = None
-    use_flash_attn_packing: bool = False
-    
+
     def __post_init__(self):
-        self.rng = random.Random(self.seed)
         self._call_count = 0
         self.uci_move_token_id = self._resolve_token_id("<uci_move>")
         if self.uci_move_token_id is None:
@@ -273,14 +343,19 @@ class DistillationCollator:
             if move_pos >= 0:
                 move_pos += prompt_length
             batch_move_positions.append(move_pos)
-        
-        # Flash Attention packing: concatenate sequences instead of padding
-        if self.use_flash_attn_packing:
-            return self._pack_for_flash_attn(
-                batch_input_ids, batch_labels, batch_move_positions
+
+        if self.padding_free:
+            # Padding-free packing for FlashAttention2 varlen.
+            # NOTE: We intentionally do not return `attention_mask` here; packed
+            # sequences are handled via `position_ids` and FlashAttention kwargs.
+            return _flatten_for_flash_attention(
+                batch_input_ids,
+                batch_labels,
+                batch_move_positions,
+                return_flash_attn_kwargs=self.return_flash_attn_kwargs,
             )
 
-        # Pad to same length (only when not packing)
+        # Pad to same length
         max_len = max(len(ids) for ids in batch_input_ids)
 
         if self.pad_to_multiple_of:
@@ -303,57 +378,6 @@ class DistillationCollator:
             'move_positions': torch.tensor(batch_move_positions, dtype=torch.long),
         }
 
-    def _pack_for_flash_attn(
-        self,
-        batch_input_ids: List[List[int]],
-        batch_labels: List[List[int]],
-        batch_move_positions: List[int],
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Pack sequences for Flash Attention 2 without padding.
-
-        Concatenates all sequences into a single tensor and generates
-        position_ids that reset at each sequence boundary. This enables
-        flash_attn_varlen_func to handle variable-length sequences efficiently.
-
-        Returns:
-            Dict with flattened input_ids, labels, position_ids, and adjusted move_positions
-        """
-        flattened_input_ids = []
-        flattened_labels = []
-        position_ids = []
-        adjusted_move_positions = []
-
-        cumulative_length = 0
-        for i, (input_ids, labels) in enumerate(zip(batch_input_ids, batch_labels)):
-            seq_len = len(input_ids)
-            flattened_input_ids.extend(input_ids)
-
-            # Set first token's label to -100 to prevent cross-sequence prediction
-            labels_copy = list(labels)
-            if labels_copy and labels_copy[0] != -100:
-                labels_copy[0] = -100
-            flattened_labels.extend(labels_copy)
-
-            # Position IDs reset to 0 at each sequence boundary
-            position_ids.extend(range(seq_len))
-
-            # Adjust move position by cumulative offset
-            move_pos = batch_move_positions[i]
-            if move_pos >= 0:
-                adjusted_move_positions.append(move_pos + cumulative_length)
-            else:
-                adjusted_move_positions.append(-1)
-
-            cumulative_length += seq_len
-
-        return {
-            'input_ids': torch.tensor([flattened_input_ids], dtype=torch.long),
-            'labels': torch.tensor([flattened_labels], dtype=torch.long),
-            'position_ids': torch.tensor([position_ids], dtype=torch.long),
-            'move_positions': torch.tensor(adjusted_move_positions, dtype=torch.long),
-        }
-
 
 @dataclass
 class PrecomputedDistillationCollator:
@@ -363,9 +387,13 @@ class PrecomputedDistillationCollator:
     Use this when you've already run Stockfish analysis and saved
     the results. Faster than on-the-fly but requires preprocessing.
 
-    When `use_flash_attn_packing=True`, sequences are concatenated without
-    padding and `position_ids` are generated for Flash Attention 2's
-    `flash_attn_varlen_func`. This can provide up to 2x throughput improvement.
+    The returned batch contains `move_positions`, which points at the `<uci_move>`
+    tag token in `input_ids` (see `DistillationCollator` for the alignment).
+
+    Output shapes:
+    - Default (`padding_free=False`): returns padded tensors (`input_ids`, `attention_mask`, `labels`).
+    - Packed (`padding_free=True`): returns a single flattened sequence with `position_ids` resets
+      (and optionally `cu_seq_lens_*`/`max_length_*` kwargs). This mode is intended for FlashAttention2.
     """
 
     tokenizer: Any
@@ -378,11 +406,11 @@ class PrecomputedDistillationCollator:
     reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
     rerandomize_reasoning_trace: bool = False
     force_best_move: bool = False
+    padding_free: bool = False
+    return_flash_attn_kwargs: bool = True
     seed: Optional[int] = None
-    use_flash_attn_packing: bool = False
-    
+
     def __post_init__(self):
-        self.rng = random.Random(self.seed)
         self._call_count = 0
         self.uci_move_token_id = self._resolve_token_id("<uci_move>")
         if self.uci_move_token_id is None:
@@ -458,13 +486,13 @@ class PrecomputedDistillationCollator:
             
             # Loss weight
             batch_weights.append(ex.get('loss_weight', 1.0))
-        
-        # Pack or pad
-        if self.use_flash_attn_packing:
-            batch = self._pack_for_flash_attn(
+
+        if self.padding_free:
+            batch = _flatten_for_flash_attention(
                 batch_input_ids,
                 batch_labels,
                 batch_move_positions,
+                return_flash_attn_kwargs=self.return_flash_attn_kwargs,
             )
         else:
             batch = self._pad_batch(
@@ -478,53 +506,6 @@ class PrecomputedDistillationCollator:
         batch['sample_weights'] = torch.tensor(batch_weights, dtype=torch.float)
 
         return batch
-
-    def _pack_for_flash_attn(
-        self,
-        batch_input_ids: List[List[int]],
-        batch_labels: List[List[int]],
-        batch_move_positions: List[int],
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Pack sequences for Flash Attention 2 without padding.
-
-        Concatenates all sequences into a single tensor and generates
-        position_ids that reset at each sequence boundary.
-        """
-        flattened_input_ids = []
-        flattened_labels = []
-        position_ids = []
-        adjusted_move_positions = []
-
-        cumulative_length = 0
-        for i, (input_ids, labels) in enumerate(zip(batch_input_ids, batch_labels)):
-            seq_len = len(input_ids)
-            flattened_input_ids.extend(input_ids)
-
-            # Set first token's label to -100 to prevent cross-sequence prediction
-            labels_copy = list(labels)
-            if labels_copy and labels_copy[0] != -100:
-                labels_copy[0] = -100
-            flattened_labels.extend(labels_copy)
-
-            # Position IDs reset to 0 at each sequence boundary
-            position_ids.extend(range(seq_len))
-
-            # Adjust move position by cumulative offset
-            move_pos = batch_move_positions[i]
-            if move_pos >= 0:
-                adjusted_move_positions.append(move_pos + cumulative_length)
-            else:
-                adjusted_move_positions.append(-1)
-
-            cumulative_length += seq_len
-
-        return {
-            'input_ids': torch.tensor([flattened_input_ids], dtype=torch.long),
-            'labels': torch.tensor([flattened_labels], dtype=torch.long),
-            'position_ids': torch.tensor([position_ids], dtype=torch.long),
-            'move_positions': torch.tensor(adjusted_move_positions, dtype=torch.long),
-        }
     
     def _regenerate_messages(
         self,
@@ -673,27 +654,3 @@ class PrecomputedDistillationCollator:
             'attention_mask': torch.tensor(padded_attention, dtype=torch.long),
             'labels': torch.tensor(padded_labels, dtype=torch.long),
         }
-
-
-        
-        # Test precomputed collator
-        precomputed_examples = [
-            {
-                'fen': 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1',
-                'target_move_uci': 'e7e5',
-                'messages': [
-                    {'role': 'user', 'content': 'Test prompt'},
-                    {'role': 'assistant', 'content': '<think>Test</think>\n<uci_move>e7e5</uci_move>'},
-                ],
-                'move_probs': {'e7e5': 0.4, 'c7c5': 0.3, 'd7d5': 0.2, 'g8f6': 0.1},
-                'loss_weight': 1.0,
-            },
-        ]
-        
-        collator = PrecomputedDistillationCollator(
-            tokenizer=tokenizer,
-            max_length=512,
-        )
-        
-        batch = collator(precomputed_examples)
-        print(f"Precomputed batch shape: {batch['input_ids'].shape}")
