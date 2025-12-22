@@ -117,6 +117,58 @@ def _extract_thinking_from_messages(messages: Any) -> str:
     return match.group(1).strip()
 
 
+def _extract_full_response(messages: Any) -> str:
+    """Extract full assistant response including <think> and <uci_move>."""
+    if not messages or not isinstance(messages, list):
+        return ""
+    for msg in messages:
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return str(msg.get("content", "")).strip()
+    return ""
+
+
+def _classify_position(fen: str) -> str:
+    """Classify position as 'opening', 'middlegame', or 'endgame'."""
+    try:
+        board = chess.Board(fen)
+        piece_count = len(board.piece_map())
+
+        if piece_count <= 10:
+            return "endgame"
+        if board.fullmove_number <= 10:
+            return "opening"
+        return "middlegame"
+    except Exception:
+        return "unknown"
+
+
+def _format_kl_distribution(move_probs: Dict[str, float], top_n: int = 10) -> str:
+    """Format move probability distribution for display."""
+    if not move_probs:
+        return "(no distribution available)"
+
+    # Filter out None values and sort by probability descending
+    valid_probs = [(k, v) for k, v in move_probs.items() if v is not None]
+    if not valid_probs:
+        return "(no valid probabilities)"
+    sorted_probs = sorted(valid_probs, key=lambda x: -x[1])
+
+    lines = []
+    lines.append(f"Top {min(top_n, len(sorted_probs))} moves (of {len(sorted_probs)} legal):")
+
+    for i, (move, prob) in enumerate(sorted_probs[:top_n]):
+        bar_len = int(prob * 40)  # 40-char max bar
+        bar = "=" * bar_len + "." * (40 - bar_len)
+        lines.append(f"  {move:6s} {prob:6.2%} [{bar}]")
+
+    # Show sum of top-k vs rest
+    rest_sum = sum(p for _, p in sorted_probs[top_n:])
+    if rest_sum > 0:
+        lines.append(f"  (remaining {len(sorted_probs) - top_n} moves: {rest_sum:.2%})")
+
+    return "\n".join(lines)
+
+
 def analysis_from_row(row: Dict[str, Any]) -> PositionAnalysis:
     fen = row.get("fen")
     if not fen:
@@ -196,6 +248,79 @@ def _pick_rows(
     return picked
 
 
+def _pick_rows_stratified(
+    ds: Any,
+    rng: random.Random,
+    num_samples: int,
+    source: str,
+    max_tries: int,
+    opening_min: int = 0,
+    endgame_min: int = 0,
+) -> List[Dict[str, Any]]:
+    """Pick rows with stratified sampling across game phases.
+
+    Ensures a mix of opening, middlegame, and endgame positions.
+    """
+    if num_samples <= 0:
+        return []
+    total = len(ds)
+    if total <= 0:
+        return []
+
+    # Target distribution: ~25% opening, ~25% endgame, ~50% middlegame
+    opening_target = opening_min if opening_min > 0 else max(2, num_samples // 4)
+    endgame_target = endgame_min if endgame_min > 0 else max(2, num_samples // 4)
+    middlegame_target = num_samples - opening_target - endgame_target
+
+    targets = {
+        "opening": opening_target,
+        "endgame": endgame_target,
+        "middlegame": middlegame_target,
+        "unknown": 0,  # Don't specifically target unknown
+    }
+
+    picked: Dict[str, List[Dict[str, Any]]] = {
+        "opening": [],
+        "middlegame": [],
+        "endgame": [],
+        "unknown": [],
+    }
+    used: set[int] = set()
+    wanted_source = None if source == "mixed" else source
+
+    tries = 0
+    while sum(len(v) for v in picked.values()) < num_samples and tries < max_tries:
+        tries += 1
+        idx = rng.randrange(total)
+        if idx in used:
+            continue
+
+        row = ds[int(idx)]
+        if not isinstance(row, dict):
+            continue
+
+        # Source filter
+        if wanted_source and row.get("source") != wanted_source:
+            continue
+
+        # Classify and check quota
+        phase = _classify_position(row.get("fen", ""))
+        if len(picked[phase]) < targets.get(phase, num_samples):
+            used.add(idx)
+            picked[phase].append(row)
+        elif sum(len(v) for v in picked.values()) < num_samples:
+            # Allow overflow to other categories if not full
+            for fallback_phase in ["middlegame", "opening", "endgame"]:
+                if len(picked[fallback_phase]) < targets.get(fallback_phase, 0) + 2:
+                    used.add(idx)
+                    picked[fallback_phase].append(row)
+                    break
+
+    # Combine all phases in order: opening, middlegame, endgame
+    result = picked["opening"] + picked["middlegame"] + picked["endgame"] + picked["unknown"]
+    return result
+
+
 def _code_block(text: str) -> str:
     text = (text or "").rstrip()
     return f"```text\n{text}\n```"
@@ -244,6 +369,35 @@ def main() -> int:
         "--use-existing-trace",
         action="store_true",
         help="Use <think> from stored messages instead of regenerating with current trace generator.",
+    )
+    parser.add_argument(
+        "--stratified",
+        action="store_true",
+        default=True,
+        help="Use stratified sampling to ensure mix of opening/middlegame/endgame (default: True).",
+    )
+    parser.add_argument(
+        "--no-stratified",
+        action="store_true",
+        help="Disable stratified sampling, use random sampling instead.",
+    )
+    parser.add_argument(
+        "--opening-samples",
+        type=int,
+        default=0,
+        help="Minimum opening samples (0 = auto ~25%%).",
+    )
+    parser.add_argument(
+        "--endgame-samples",
+        type=int,
+        default=0,
+        help="Minimum endgame samples (0 = auto ~25%%).",
+    )
+    parser.add_argument(
+        "--top-k-moves",
+        type=int,
+        default=10,
+        help="Number of moves to show in KL distribution (default: 10).",
     )
     args = parser.parse_args()
 
@@ -314,7 +468,15 @@ def main() -> int:
             ds = next(iter(ds.values()))
 
     rng = random.Random(args.seed)
-    rows = _pick_rows(ds, rng, args.num_samples, args.source, args.max_tries)
+    use_stratified = args.stratified and not args.no_stratified
+    if use_stratified:
+        rows = _pick_rows_stratified(
+            ds, rng, args.num_samples, args.source, args.max_tries,
+            opening_min=args.opening_samples,
+            endgame_min=args.endgame_samples,
+        )
+    else:
+        rows = _pick_rows(ds, rng, args.num_samples, args.source, args.max_tries)
     if not rows:
         print("No rows selected. Check dataset/source filters.")
         return 3
@@ -326,13 +488,20 @@ def main() -> int:
     out_path = args.output
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Count samples by phase for header
+    phase_counts = {"opening": 0, "middlegame": 0, "endgame": 0, "unknown": 0}
+    for row in rows:
+        phase = _classify_position(row.get("fen", ""))
+        phase_counts[phase] = phase_counts.get(phase, 0) + 1
+
     lines: List[str] = []
     lines.append("# Distillation Gut Check Report")
     lines.append("")
     lines.append(f"- Generated: `{now}`")
     lines.append(f"- Config: `{args.config.as_posix()}`")
     lines.append(f"- Dataset: `{dataset_path.as_posix()}`")
-    lines.append(f"- Samples: `{len(rows)}` (source filter: `{args.source}`)")
+    lines.append(f"- Samples: `{len(rows)}` (source filter: `{args.source}`, stratified: `{use_stratified}`)")
+    lines.append(f"- Phase distribution: opening=`{phase_counts['opening']}`, middlegame=`{phase_counts['middlegame']}`, endgame=`{phase_counts['endgame']}`")
     lines.append("")
     lines.append("## Assets")
     lines.append(f"- Openings: `{openings_ok}` (tsv files: `{openings_count}`)")
@@ -343,9 +512,11 @@ def main() -> int:
     for idx, row in enumerate(rows, start=1):
         fen = row.get("fen", "")
         source = row.get("source", "unknown")
+        phase = _classify_position(fen)
         white_elo = row.get("white_elo", row.get("rating", ""))
         black_elo = row.get("black_elo", row.get("rating", ""))
         move_number = row.get("move_number", "")
+        best_move_uci = row.get("best_move_uci", "")
 
         board_utf = row.get("board_utf") or render_board_utf(chess.Board(fen))
 
@@ -356,9 +527,10 @@ def main() -> int:
             if isinstance(first, dict):
                 prompt = str(first.get("content", ""))
 
-        thinking = ""
+        # Get full response or generate it
+        full_response = ""
         if args.use_existing_trace:
-            thinking = _extract_thinking_from_messages(messages)
+            full_response = _extract_full_response(messages)
         else:
             try:
                 analysis = analysis_from_row(row)
@@ -367,11 +539,18 @@ def main() -> int:
                     analysis=analysis,
                     rng=random.Random(args.seed + idx),
                 )
+                # Build full training format
+                move_to_use = best_move_uci or (analysis.best_move_uci if analysis else "")
+                full_response = f"<think>\n{thinking}\n</think>\n<uci_move>{move_to_use}</uci_move>"
             except Exception as exc:
-                thinking = f"[trace generation failed: {exc}]"
+                full_response = f"[trace generation failed: {exc}]"
+
+        # Format KL distribution
+        move_probs = row.get("move_probs", {})
+        kl_dist = _format_kl_distribution(move_probs, top_n=args.top_k_moves)
 
         lines.append(f"## Sample {idx}")
-        lines.append(f"- source: `{source}`  move_number: `{move_number}`  white_elo: `{white_elo}`  black_elo: `{black_elo}`")
+        lines.append(f"- **Phase**: `{phase}` | source: `{source}` | move: `{move_number}` | ELO: `{white_elo}`/`{black_elo}`")
         lines.append(f"- fen: `{fen}`")
         lines.append("")
         lines.append("### Board")
@@ -380,9 +559,25 @@ def main() -> int:
         lines.append("### Prompt")
         lines.append(_code_block(prompt))
         lines.append("")
-        lines.append("### Reasoning Trace")
-        lines.append(_code_block(thinking))
+        lines.append("### Full Training Response")
+        lines.append(_code_block(full_response))
         lines.append("")
+        lines.append("### KL Distribution (Stockfish)")
+        lines.append(_code_block(kl_dist))
+        lines.append("")
+
+    # Summary statistics at end
+    lines.append("---")
+    lines.append("")
+    lines.append("## Summary Statistics")
+    lines.append("")
+    lines.append(f"- Total samples: `{len(rows)}`")
+    lines.append(f"- Opening positions: `{phase_counts['opening']}` ({100*phase_counts['opening']/len(rows):.1f}%)")
+    lines.append(f"- Middlegame positions: `{phase_counts['middlegame']}` ({100*phase_counts['middlegame']/len(rows):.1f}%)")
+    lines.append(f"- Endgame positions: `{phase_counts['endgame']}` ({100*phase_counts['endgame']/len(rows):.1f}%)")
+    lines.append(f"- Opening book available: `{trace_status.get('opening_available')}`")
+    lines.append(f"- Tablebase available: `{trace_status.get('tablebase_available')}`")
+    lines.append("")
 
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"Wrote report: {out_path}")

@@ -987,6 +987,7 @@ def create_distillation_trainer(
             pv_length=formatting_config.get('pv_length', 5),
             include_board=formatting_config.get('include_board', True),
             reasoning_trace_generator=reasoning_trace_generator,
+            rerandomize_reasoning_trace=reasoning_trace_config.get("rerandomize_in_collator", False),
             force_best_move=force_best_move,
             seed=training_config.get('seed', 42),
         )
@@ -1246,6 +1247,8 @@ def main():
             print(f"  WDL temperature: {stockfish_config.get('wdl_temperature', 1.0)}")
         if stockfish_config.get('cache_size', 0):
             print(f"  Cache size: {stockfish_config.get('cache_size')}")
+        if stockfish_config.get('syzygy_path'):
+            print(f"  Syzygy path: {stockfish_config.get('syzygy_path')}")
 
         teacher = StockfishTeacher(
             stockfish_path=sf_path,
@@ -1265,6 +1268,7 @@ def main():
             prob_mode=stockfish_config.get('prob_mode', 'cp'),
             wdl_temperature=stockfish_config.get('wdl_temperature', 1.0),
             cache_size=stockfish_config.get('cache_size', 0),
+            syzygy_path=stockfish_config.get('syzygy_path'),
         )
         print("StockfishTeacher created")
 

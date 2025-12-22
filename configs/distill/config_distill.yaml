@@ -64,6 +64,10 @@ stockfish:
   # Path (auto-detected if not specified)
   # path: "/usr/bin/stockfish"
 
+  # Syzygy tablebase path for perfect endgame play (positions with ≤6-7 pieces)
+  # Stockfish will use these for exact win/draw/loss evaluation
+  syzygy_path: "./data/syzygy"
+
   # Number of parallel workers (adjust based on CPU cores)
   # For 32-core system: 20-24 workers (leave headroom)
   num_workers: 20
@@ -211,6 +215,10 @@ reasoning_trace:
 
   # Always output Stockfish's best move in <uci_move>
   always_choose_best_move: true
+
+  # When training from a preprocessed dataset, reuse the precomputed trace text.
+  # Set true to regenerate traces in the training collator for extra variety (slower).
+  rerandomize_in_collator: false
 
   # Max tokens for the reasoning trace (approximate if tokenizer unavailable)
   max_trace_tokens: 1024

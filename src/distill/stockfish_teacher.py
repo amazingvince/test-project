@@ -295,6 +295,7 @@ class StockfishWorker:
         confirm_top_k: int = 0,
         prob_mode: str = "cp",
         wdl_temperature: float = 1.0,
+        syzygy_path: Optional[str] = None,
     ):
         self.stockfish_path = stockfish_path
         self.top_k = top_k
@@ -311,16 +312,21 @@ class StockfishWorker:
         self.confirm_top_k = confirm_top_k
         self.prob_mode = prob_mode
         self.wdl_temperature = 1.0 if wdl_temperature is None else wdl_temperature
+        self.syzygy_path = syzygy_path
         self._engine: Optional[chess.engine.SimpleEngine] = None
         self._lock = threading.Lock()
     
     def _get_engine(self) -> chess.engine.SimpleEngine:
         if self._engine is None:
             self._engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
-            self._engine.configure({
+            config = {
                 "Threads": self.threads,
                 "Hash": self.hash_mb,
-            })
+            }
+            # Add Syzygy tablebase path if provided
+            if self.syzygy_path:
+                config["SyzygyPath"] = self.syzygy_path
+            self._engine.configure(config)
         return self._engine
 
     def _build_limit(
@@ -703,10 +709,11 @@ class StockfishTeacher:
         prob_mode: str = "cp",
         wdl_temperature: float = 1.0,
         cache_size: int = 0,
+        syzygy_path: Optional[str] = None,
     ):
         """
         Initialize teacher with worker pool.
-        
+
         Args:
             stockfish_path: Path to Stockfish binary (auto-detect if None)
             num_workers: Number of parallel Stockfish instances
@@ -723,6 +730,7 @@ class StockfishTeacher:
             prob_mode: "cp" or "wdl" for probability conversion
             wdl_temperature: Temperature for win-prob softmax
             cache_size: LRU cache size for position analyses (0 = disabled)
+            syzygy_path: Path to Syzygy tablebase files (enables perfect endgame play)
         """
         self.stockfish_path = stockfish_path or self._find_stockfish()
         self.num_workers = num_workers
@@ -741,6 +749,7 @@ class StockfishTeacher:
         self.prob_mode = prob_mode
         self.wdl_temperature = 1.0 if wdl_temperature is None else wdl_temperature
         self.cache_size = max(cache_size or 0, 0)
+        self.syzygy_path = syzygy_path
 
         if self.prob_mode not in {"cp", "wdl"}:
             raise ValueError(f"Unsupported prob_mode: {self.prob_mode}")
@@ -801,6 +810,7 @@ class StockfishTeacher:
                 confirm_top_k=self.confirm_top_k,
                 prob_mode=self.prob_mode,
                 wdl_temperature=self.wdl_temperature,
+                syzygy_path=self.syzygy_path,
             )
             self._workers.append(worker)
             self._worker_queue.put(worker)

@@ -1969,3 +1969,12 @@ Optional "intuition then verification" flow:
 2. Verification: "Checking the line ... it holds up."
 
 This reads naturally and fits puzzle-style positions.
+
+## Performance Notes
+
+Reasoning traces can become CPU-heavy if you enable every enrichment knob. In practice:
+
+- Motif detection is the most expensive component (especially anything that iterates legal moves); keep `max_motifs_per_candidate` small and disable `include_motifs` if preprocessing/training throughput becomes the bottleneck.
+- Tablebases are only probed for positions with <= 7 pieces; they should not affect midgame throughput.
+- Opening lookups are loaded once and then cached; the first run may be slower.
+- If training from a preprocessed dataset, prefer reusing the precomputed trace text instead of regenerating it in the collator. Use `reasoning_trace.rerandomize_in_collator: false` (default) for speed, and only enable it if you explicitly want per-batch trace variation.

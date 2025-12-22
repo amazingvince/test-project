@@ -304,6 +304,7 @@ class PrecomputedDistillationCollator:
     pv_length: int = 5
     include_board: bool = True
     reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
+    rerandomize_reasoning_trace: bool = False
     force_best_move: bool = False
     seed: Optional[int] = None
     
@@ -350,16 +351,24 @@ class PrecomputedDistillationCollator:
         batch_move_positions = []
         
         for ex in examples:
-            # Get or regenerate messages
-            if (
-                'messages' in ex
-                and not self.randomize_order
-                and self.reasoning_trace_generator is None
-                and not self.force_best_move
-            ):
-                messages = ex['messages']
-            else:
-                # Regenerate with new randomization
+            messages = None
+            best_move_uci = ex.get("best_move_uci")
+            target_move_uci = ex.get("target_move_uci")
+            needs_force_best = (
+                self.force_best_move
+                and bool(best_move_uci)
+                and best_move_uci != target_move_uci
+            )
+
+            if "messages" in ex and not needs_force_best:
+                if self.reasoning_trace_generator is not None and not self.rerandomize_reasoning_trace:
+                    # Reasoning traces are already randomized during preprocessing; regenerating them
+                    # in the collator is expensive and typically unnecessary.
+                    messages = ex["messages"]
+                elif not self.randomize_order and self.reasoning_trace_generator is None:
+                    messages = ex["messages"]
+
+            if messages is None:
                 messages = self._regenerate_messages(ex, batch_rng)
             
             # Tokenize with prompt masking

@@ -760,14 +760,6 @@ class ReasoningTraceGenerator:
         if not candidates and best_analysis is not None:
             candidates = [best_analysis]
 
-        opening_info = None
-        if cfg.get("include_opening", True):
-            opening_info = self._opening.lookup(board)
-
-        tablebase_info = None
-        if cfg.get("include_tablebase", True):
-            tablebase_info = self._tablebase.probe(board)
-
         style = self._select_style(cfg, source, rng)
         notation = cfg.get("move_notation", "uci")
 
@@ -788,6 +780,9 @@ class ReasoningTraceGenerator:
             return self._generate_comparison_style(
                 board, candidates, best_analysis, analysis, rng, cfg, notation
             )
+
+        opening_info = self._opening.lookup(board) if cfg.get("include_opening", True) else None
+        tablebase_info = self._tablebase.probe(board) if cfg.get("include_tablebase", True) else None
 
         # Continue with existing flow for thorough/concise/tactical styles
         orientation = self._orientation_line(
@@ -2536,32 +2531,50 @@ class ReasoningTraceGenerator:
         double_check = self._detect_double_check(temp, attacker_color)
         if double_check:
             motifs.append(double_check)
+            if len(motifs) >= max_motifs:
+                return motifs
         fork = self._detect_fork(temp, move, attacker_color)
         if fork:
             motifs.append(fork)
+            if len(motifs) >= max_motifs:
+                return motifs
         pin = self._detect_pin(temp)
         if pin:
             motifs.append(pin)
+            if len(motifs) >= max_motifs:
+                return motifs
         skewer = self._detect_skewer(temp, attacker_color)
         if skewer:
             motifs.append(skewer)
+            if len(motifs) >= max_motifs:
+                return motifs
         discovered = self._detect_discovered_attack(board, move, attacker_color)
         if discovered:
             motifs.append(discovered)
+            if len(motifs) >= max_motifs:
+                return motifs
         else:
             clearance = self._detect_clearance(board, move, attacker_color)
             if clearance:
                 motifs.append(clearance)
+                if len(motifs) >= max_motifs:
+                    return motifs
         deflection = self._detect_deflection(board, move, attacker_color)
         if deflection:
             motifs.append(deflection)
+            if len(motifs) >= max_motifs:
+                return motifs
         xray = self._detect_xray(temp, attacker_color)
         if xray:
             motifs.append(xray)
-        sacrifice = self._detect_sacrifice(board, move, attacker_color)
+            if len(motifs) >= max_motifs:
+                return motifs
+        sacrifice = self._detect_sacrifice(board, move, attacker_color, after_board=temp)
         if sacrifice:
             motifs.append(sacrifice)
-        attraction = self._detect_attraction(board, move, attacker_color)
+            if len(motifs) >= max_motifs:
+                return motifs
+        attraction = self._detect_attraction(board, move, attacker_color, after_board=temp)
         if attraction:
             motifs.append(attraction)
         trapped = self._detect_trapped_piece(temp, attacker_color)
@@ -2576,7 +2589,7 @@ class ReasoningTraceGenerator:
         stalemate = self._detect_stalemate_trick(temp, attacker_color)
         if stalemate:
             motifs.append(stalemate)
-        perpetual = self._detect_perpetual_idea(board, move, cand, attacker_color, cfg)
+        perpetual = self._detect_perpetual_idea(board, move, cand, attacker_color, cfg, after_board=temp)
         if perpetual:
             motifs.append(perpetual)
         zwischenzug = self._detect_zwischenzug(board, move, attacker_color)
@@ -2807,13 +2820,16 @@ class ReasoningTraceGenerator:
         board: chess.Board,
         move: chess.Move,
         attacker_color: Optional[bool],
+        after_board: Optional[chess.Board] = None,
     ) -> Optional[str]:
         if attacker_color is None:
             return None
         if not board.gives_check(move):
             return None
-        temp = board.copy()
-        temp.push(move)
+        temp = after_board
+        if temp is None:
+            temp = board.copy()
+            temp.push(move)
         moved_piece = temp.piece_at(move.to_square)
         if moved_piece is None:
             return None
@@ -2837,16 +2853,18 @@ class ReasoningTraceGenerator:
                 continue
             if not board.is_attacked_by(attacker_color, square):
                 continue
-            legal_moves = [m for m in board.legal_moves if m.from_square == square]
-            if not legal_moves:
-                continue
+            scratch = board.copy(stack=False)
+            any_moves = False
             safe = False
-            for mv in legal_moves:
-                temp = board.copy()
-                temp.push(mv)
-                if not temp.is_attacked_by(attacker_color, mv.to_square):
-                    safe = True
+            for mv in board.generate_legal_moves(from_mask=chess.BB_SQUARES[square]):
+                any_moves = True
+                scratch.push(mv)
+                safe = not scratch.is_attacked_by(attacker_color, mv.to_square)
+                scratch.pop()
+                if safe:
                     break
+            if not any_moves:
+                continue
             if not safe:
                 value = PIECE_VALUES.get(piece.piece_type, 0)
                 name = PIECE_NAMES.get(piece.piece_type, "piece")
@@ -2981,6 +2999,7 @@ class ReasoningTraceGenerator:
         cand: Any,
         attacker_color: Optional[bool],
         cfg: Dict[str, Any],
+        after_board: Optional[chess.Board] = None,
     ) -> Optional[str]:
         if attacker_color is None:
             return None
@@ -2990,8 +3009,9 @@ class ReasoningTraceGenerator:
         if not pv_uci:
             return None
         max_plies = int(cfg.get("perpetual_max_plies", 6))
-        temp = board.copy()
-        temp.push(move)
+        temp = after_board.copy(stack=False) if after_board is not None else board.copy()
+        if after_board is None:
+            temp.push(move)
         checks = 1
         for uci in pv_uci[1:max_plies + 1]:
             try:
@@ -3012,13 +3032,16 @@ class ReasoningTraceGenerator:
         board: chess.Board,
         move: chess.Move,
         attacker_color: Optional[bool],
+        after_board: Optional[chess.Board] = None,
     ) -> Optional[str]:
         if attacker_color is None:
             return None
         if not (board.is_capture(move) or board.gives_check(move)):
             return None
-        temp = board.copy()
-        temp.push(move)
+        temp = after_board
+        if temp is None:
+            temp = board.copy()
+            temp.push(move)
         piece = temp.piece_at(move.to_square)
         if piece is None or piece.color != attacker_color:
             return None
@@ -3922,7 +3945,8 @@ class ReasoningTraceGenerator:
                 return len(self.tokenizer.encode(text, add_special_tokens=False))
             except Exception:
                 pass
-        return max(1, max(len(text.split()), len(text) // 4))
+        approx_words = text.count(" ") + text.count("\n") + text.count("\t") + 1
+        return max(1, max(approx_words, len(text) // 4))
 
     @staticmethod
     def _repo_root() -> Path:

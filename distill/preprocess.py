@@ -505,6 +505,7 @@ def main():
         else stockfish_config.get('wdl_temperature', 1.0)
     )
     stockfish_path = args.stockfish_path or stockfish_config.get('path')
+    syzygy_path = stockfish_config.get('syzygy_path')
     games_ratio = args.games_ratio if args.games_ratio is not None else data_config.get('games_ratio', 0.7)
     batch_size = args.batch_size
     
@@ -546,6 +547,8 @@ def main():
         logger.info("  WDL temperature: %s", wdl_temperature)
     if cache_size:
         logger.info("  Cache size: %s", cache_size)
+    if syzygy_path:
+        logger.info("  Syzygy path: %s", syzygy_path)
     logger.info("Batch size: %s", batch_size)
     
     # Initialize
@@ -571,6 +574,7 @@ def main():
             prob_mode=prob_mode,
             wdl_temperature=wdl_temperature,
             cache_size=cache_size,
+            syzygy_path=syzygy_path,
         ) as test_teacher:
             analysis = test_teacher.analyze_position(chess.STARTING_FEN)
             logger.info("Stockfish OK (best move in start position: %s)", analysis.best_move_san)
@@ -595,6 +599,7 @@ def main():
         prob_mode=prob_mode,
         wdl_temperature=wdl_temperature,
         cache_size=cache_size,
+        syzygy_path=syzygy_path,
     )
     
     all_examples = []
