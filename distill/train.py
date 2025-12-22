@@ -1102,7 +1102,8 @@ def main():
         config['training']['per_device_train_batch_size'] = 2
         config['training']['gradient_accumulation_steps'] = 2
 
-    # Get distillation config
+    # Get config sections
+    training_config = config.get('training', {})
     distill_config = config.get('distillation', {})
     cce_config = config.get('cce', {})
     stockfish_config = config.get('stockfish', {})
