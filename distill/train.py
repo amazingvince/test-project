@@ -566,13 +566,26 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
 
     attn_impl = model_config.get('attn_implementation', 'flash_attention_2')
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=dtype,
-        device_map="auto",
-        trust_remote_code=True,
-        attn_implementation=attn_impl,
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map="auto",
+            trust_remote_code=True,
+            attn_implementation=attn_impl,
+        )
+    except Exception as e:
+        if attn_impl == "flash_attention_2":
+            print(f"Warning: flash_attention_2 unavailable ({e}); falling back to eager attention.")
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                device_map="auto",
+                trust_remote_code=True,
+                attn_implementation="eager",
+            )
+        else:
+            raise
 
     if training_config.get('gradient_checkpointing', True):
         model.gradient_checkpointing_enable(

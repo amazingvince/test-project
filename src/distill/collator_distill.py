@@ -178,14 +178,20 @@ class DistillationCollator:
         board = chess.Board(fen)
         board_utf = example.get('board_utf') or render_board_utf(board)
         legal_moves = example.get('legal_moves_uci') or get_legal_moves_uci(board)
+        side_to_move = "White" if board.turn == chess.WHITE else "Black"
+        example_move = get_first_legal_move(board) or ""
         
         user_content = DISTILLATION_PROMPT_TEMPLATE.format(
             fen=fen,
             legal_moves=legal_moves,
             board=board_utf,
+            side_to_move=side_to_move,
+            example_move=example_move,
         ) if self.include_board else DISTILLATION_PROMPT_TEMPLATE_NO_BOARD.format(
             fen=fen,
             legal_moves=legal_moves,
+            side_to_move=side_to_move,
+            example_move=example_move,
         )
         
         # Simple thinking without analysis

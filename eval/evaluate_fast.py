@@ -78,12 +78,21 @@ def load_model(model_path: str, device: str = "auto", compile_model: bool = True
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     
     # Use bfloat16 for better performance on modern GPUs
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16,
-        device_map=device,
-        attn_implementation="flash_attention_2",  # Fast attention
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=device,
+            attn_implementation="flash_attention_2",  # Fast attention
+        )
+    except Exception as e:
+        logger.warning("flash_attention_2 unavailable (%s); falling back to eager attention.", e)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            device_map=device,
+            attn_implementation="eager",
+        )
     
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

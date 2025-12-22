@@ -57,12 +57,17 @@ def position_to_messages(
       1. A `user` message containing the formatted prompt.
       2. An `assistant` message containing the formatted target response.
     """
+    fen = position["fen"]
+    fen_parts = fen.split()
+    side_to_move = position.get("side_to_move") or (
+        "White" if len(fen_parts) > 1 and fen_parts[1] == "w" else "Black"
+    )
     user_content = prompt_template.format(
-        fen=position["fen"],
+        fen=fen,
         legal_moves=position["legal_moves_uci"],
         board=position["board_utf"],
         example_move=position["first_legal_move"],
-        side_to_move=position["side_to_move"],
+        side_to_move=side_to_move,
     )
     assistant_content = response_template.format(move=position["target_move_uci"])
 

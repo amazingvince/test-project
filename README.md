@@ -74,3 +74,4 @@ More details: `scripts/README.md`
 - `docs/chess_reasoning_trace_generator.md`: reasoning trace generator design and knobs
 - `docs/STOCKFISH_EVAL_TRAINING.md`: Stockfish-eval dataset generation and weighting ideas
 - `docs/OPTIMIZATION_GUIDE.md`: performance notes (CCE/Liger/etc.)
+- End-to-end Linux GPU guide: `docs/END_TO_END_LINUX_GPU.md`
