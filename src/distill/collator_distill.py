@@ -39,12 +39,16 @@ class DistillationCollator:
     3. Creates soft target distributions for distillation loss
 
     This enables streaming training without pre-computing all analyses.
+
+    When `use_flash_attn_packing=True`, sequences are concatenated without
+    padding and `position_ids` are generated for Flash Attention 2's
+    `flash_attn_varlen_func`. This can provide up to 2x throughput improvement.
     """
 
     tokenizer: Any
     teacher: StockfishTeacher
     max_length: int = 2048
-    pad_to_multiple_of: int = 8
+    pad_to_multiple_of: Optional[int] = 8
     max_display_moves: int = 5
     randomize_order: bool = True
     include_soft_targets: bool = True
@@ -54,6 +58,7 @@ class DistillationCollator:
     reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
     force_best_move: bool = False
     seed: Optional[int] = None
+    use_flash_attn_packing: bool = False
     
     def __post_init__(self):
         self.rng = random.Random(self.seed)
@@ -269,27 +274,84 @@ class DistillationCollator:
                 move_pos += prompt_length
             batch_move_positions.append(move_pos)
         
-        # Pad to same length
+        # Flash Attention packing: concatenate sequences instead of padding
+        if self.use_flash_attn_packing:
+            return self._pack_for_flash_attn(
+                batch_input_ids, batch_labels, batch_move_positions
+            )
+
+        # Pad to same length (only when not packing)
         max_len = max(len(ids) for ids in batch_input_ids)
-        
+
         if self.pad_to_multiple_of:
-            max_len = ((max_len + self.pad_to_multiple_of - 1) 
+            max_len = ((max_len + self.pad_to_multiple_of - 1)
                        // self.pad_to_multiple_of * self.pad_to_multiple_of)
-        
+
         pad_token_id = self.tokenizer.pad_token_id or 0
-        
+
         for i in range(len(batch_input_ids)):
             pad_len = max_len - len(batch_input_ids[i])
-            
+
             batch_input_ids[i] = batch_input_ids[i] + [pad_token_id] * pad_len
             batch_attention_mask[i] = batch_attention_mask[i] + [0] * pad_len
             batch_labels[i] = batch_labels[i] + [-100] * pad_len
-        
+
         return {
             'input_ids': torch.tensor(batch_input_ids, dtype=torch.long),
             'attention_mask': torch.tensor(batch_attention_mask, dtype=torch.long),
             'labels': torch.tensor(batch_labels, dtype=torch.long),
             'move_positions': torch.tensor(batch_move_positions, dtype=torch.long),
+        }
+
+    def _pack_for_flash_attn(
+        self,
+        batch_input_ids: List[List[int]],
+        batch_labels: List[List[int]],
+        batch_move_positions: List[int],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Pack sequences for Flash Attention 2 without padding.
+
+        Concatenates all sequences into a single tensor and generates
+        position_ids that reset at each sequence boundary. This enables
+        flash_attn_varlen_func to handle variable-length sequences efficiently.
+
+        Returns:
+            Dict with flattened input_ids, labels, position_ids, and adjusted move_positions
+        """
+        flattened_input_ids = []
+        flattened_labels = []
+        position_ids = []
+        adjusted_move_positions = []
+
+        cumulative_length = 0
+        for i, (input_ids, labels) in enumerate(zip(batch_input_ids, batch_labels)):
+            seq_len = len(input_ids)
+            flattened_input_ids.extend(input_ids)
+
+            # Set first token's label to -100 to prevent cross-sequence prediction
+            labels_copy = list(labels)
+            if labels_copy and labels_copy[0] != -100:
+                labels_copy[0] = -100
+            flattened_labels.extend(labels_copy)
+
+            # Position IDs reset to 0 at each sequence boundary
+            position_ids.extend(range(seq_len))
+
+            # Adjust move position by cumulative offset
+            move_pos = batch_move_positions[i]
+            if move_pos >= 0:
+                adjusted_move_positions.append(move_pos + cumulative_length)
+            else:
+                adjusted_move_positions.append(-1)
+
+            cumulative_length += seq_len
+
+        return {
+            'input_ids': torch.tensor([flattened_input_ids], dtype=torch.long),
+            'labels': torch.tensor([flattened_labels], dtype=torch.long),
+            'position_ids': torch.tensor([position_ids], dtype=torch.long),
+            'move_positions': torch.tensor(adjusted_move_positions, dtype=torch.long),
         }
 
 
@@ -300,11 +362,15 @@ class PrecomputedDistillationCollator:
 
     Use this when you've already run Stockfish analysis and saved
     the results. Faster than on-the-fly but requires preprocessing.
+
+    When `use_flash_attn_packing=True`, sequences are concatenated without
+    padding and `position_ids` are generated for Flash Attention 2's
+    `flash_attn_varlen_func`. This can provide up to 2x throughput improvement.
     """
 
     tokenizer: Any
     max_length: int = 2048
-    pad_to_multiple_of: int = 8
+    pad_to_multiple_of: Optional[int] = 8
     max_display_moves: int = 5
     randomize_order: bool = True
     pv_length: int = 5
@@ -313,6 +379,7 @@ class PrecomputedDistillationCollator:
     rerandomize_reasoning_trace: bool = False
     force_best_move: bool = False
     seed: Optional[int] = None
+    use_flash_attn_packing: bool = False
     
     def __post_init__(self):
         self.rng = random.Random(self.seed)
@@ -392,18 +459,72 @@ class PrecomputedDistillationCollator:
             # Loss weight
             batch_weights.append(ex.get('loss_weight', 1.0))
         
-        # Pad
-        batch = self._pad_batch(
-            batch_input_ids,
-            batch_attention_mask,
-            batch_labels,
-        )
+        # Pack or pad
+        if self.use_flash_attn_packing:
+            batch = self._pack_for_flash_attn(
+                batch_input_ids,
+                batch_labels,
+                batch_move_positions,
+            )
+        else:
+            batch = self._pad_batch(
+                batch_input_ids,
+                batch_attention_mask,
+                batch_labels,
+            )
+            batch['move_positions'] = torch.tensor(batch_move_positions, dtype=torch.long)
 
         batch['soft_targets'] = batch_soft_targets
         batch['sample_weights'] = torch.tensor(batch_weights, dtype=torch.float)
-        batch['move_positions'] = torch.tensor(batch_move_positions, dtype=torch.long)
 
         return batch
+
+    def _pack_for_flash_attn(
+        self,
+        batch_input_ids: List[List[int]],
+        batch_labels: List[List[int]],
+        batch_move_positions: List[int],
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Pack sequences for Flash Attention 2 without padding.
+
+        Concatenates all sequences into a single tensor and generates
+        position_ids that reset at each sequence boundary.
+        """
+        flattened_input_ids = []
+        flattened_labels = []
+        position_ids = []
+        adjusted_move_positions = []
+
+        cumulative_length = 0
+        for i, (input_ids, labels) in enumerate(zip(batch_input_ids, batch_labels)):
+            seq_len = len(input_ids)
+            flattened_input_ids.extend(input_ids)
+
+            # Set first token's label to -100 to prevent cross-sequence prediction
+            labels_copy = list(labels)
+            if labels_copy and labels_copy[0] != -100:
+                labels_copy[0] = -100
+            flattened_labels.extend(labels_copy)
+
+            # Position IDs reset to 0 at each sequence boundary
+            position_ids.extend(range(seq_len))
+
+            # Adjust move position by cumulative offset
+            move_pos = batch_move_positions[i]
+            if move_pos >= 0:
+                adjusted_move_positions.append(move_pos + cumulative_length)
+            else:
+                adjusted_move_positions.append(-1)
+
+            cumulative_length += seq_len
+
+        return {
+            'input_ids': torch.tensor([flattened_input_ids], dtype=torch.long),
+            'labels': torch.tensor([flattened_labels], dtype=torch.long),
+            'position_ids': torch.tensor([position_ids], dtype=torch.long),
+            'move_positions': torch.tensor(adjusted_move_positions, dtype=torch.long),
+        }
     
     def _regenerate_messages(
         self,

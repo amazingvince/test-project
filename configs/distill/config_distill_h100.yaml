@@ -11,7 +11,7 @@
 # - Floor probability for all legal moves (learns rules!)
 
 model:
-  name: "Qwen/Qwen3-0.6B"
+  name: "Qwen/Qwen3-4B-Thinking-2507"
   max_seq_length: 1024
   attn_implementation: "flash_attention_2"
   torch_dtype: "bfloat16"
@@ -20,9 +20,9 @@ training:
   output_dir: "./outputs/chess-distill-h100"
   
   # Batch settings
-  per_device_train_batch_size: 16
-  per_device_eval_batch_size: 16
-  gradient_accumulation_steps: 2
+  per_device_train_batch_size: 48
+  per_device_eval_batch_size: 48
+  gradient_accumulation_steps: 1
   
   # Training duration
   num_train_epochs: 1
@@ -37,14 +37,20 @@ training:
   optim: "adamw_torch_fused"
   weight_decay: 0.01
   max_grad_norm: 1.0
+
+  
+  # Performance optimizations
+  torch_compile: true  # Enable torch.compile for faster training (may have warm-up overhead)
+  use_unpad: true  # Flash Attention packing - concatenate sequences with position_ids (up to 2x throughput)     
+
   
   # Logging
-  logging_steps: 50
+  logging_steps: 10
   report_to: "wandb"
   run_name: "chess-policy-distill-h100"
 
   # Chess eval generation
-  chess_eval_max_new_tokens: 128
+  chess_eval_max_new_tokens: 1024
   
   # Saving
   save_steps: 500
@@ -57,12 +63,12 @@ training:
   # Optimizations
   bf16: true
   tf32: true
-  gradient_checkpointing: false
+  gradient_checkpointing: true
 
 # Stockfish Teacher Configuration
 stockfish:
   # Path (auto-detected if not specified)
-  # path: "/usr/bin/stockfish"
+  path: "/usr/bin/stockfish"
 
   # Number of parallel workers (adjust based on CPU cores)
   # For 32-core system: 20-24 workers (leave headroom)
@@ -73,7 +79,7 @@ stockfish:
 
   # Analysis depth (higher = more accurate, slower)
   # depth=10 is ~40% faster than depth=12 with minimal quality loss
-  depth: 10
+  depth: 12
 
   # Optional time/node limits (override depth when set)
   time_limit_ms: null
@@ -278,11 +284,10 @@ reasoning_trace:
   trap_refutation_max_len: 4
 
   # Optional data paths (if present)
-  # opening_paths:
-  #   - "./data/openings/a.tsv"
-  #   - "./data/openings/b.tsv"
-  # tablebase_paths:
-  #   - "./data/syzygy"
+  opening_paths:
+    - "./data/openings"
+  tablebase_paths:
+    - "./data/syzygy"
 
   # Variety controls
   orientation_starter_prob: 0.25
@@ -295,12 +300,12 @@ reasoning_trace:
     tactical: 0.15
 
   # Source-aware language tweaks
-  source_overrides:
-    puzzle:
-      style: "tactical"
-      max_candidates: 4
-    game:
-      style: "thorough"
+  # source_overrides:
+  #   puzzle:
+  #     style: "tactical"
+  #     max_candidates: 4
+  #   game:
+  #     style: "thorough"
 
 # Data Configuration
 data:
@@ -309,7 +314,7 @@ data:
   puzzles_dataset: "Lichess/chess-puzzles"
   
   # Target size
-  target_size: 500000
+  target_size: 1000000
   games_ratio: 0.7
   
   # Position sampling
@@ -330,7 +335,7 @@ data:
   # Set to true and use --streaming flag for on-the-fly analysis
   # Preprocessed data is faster but requires disk space
   # Streaming is slower but requires no preprocessing
-  streaming: false  # Use --streaming flag to enable
+  streaming: true  # Use --streaming flag to enable
 
 # ELO-based sampling weights
 elo_weights:
@@ -344,11 +349,11 @@ elo_weights:
 
 # Evaluation
 evaluation:
-  stockfish_path: null
-  stockfish_depth: 10
-  stockfish_workers: 8
+  stockfish_path: "/usr/bin/stockfish"
+  stockfish_depth: 20
+  stockfish_workers: 24
 
 # Output
 output:
-  push_to_hub: false
-  hub_model_id: null
+  push_to_hub: true
+  hub_model_id: "amazingvince/distill-stockfish-llm"

@@ -548,7 +548,11 @@ def load_config(config_path: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
+def setup_model_and_tokenizer(
+    config: Dict[str, Any],
+    use_liger: bool = True,
+    use_torch_compile: bool = False,
+):
     """Setup model and tokenizer with optimizations."""
     model_config = config.get('model', {})
     training_config = config.get('training', {})
@@ -604,6 +608,15 @@ def setup_model_and_tokenizer(config: Dict[str, Any], use_liger: bool = True):
         model.generation_config.pad_token_id = tokenizer.pad_token_id
         model.generation_config.eos_token_id = tokenizer.eos_token_id
 
+    # Apply torch.compile for faster training
+    if use_torch_compile:
+        print("Applying torch.compile to model...")
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            print("torch.compile applied successfully")
+        except Exception as e:
+            print(f"Warning: torch.compile failed ({e}), continuing without compilation")
+
     return model, tokenizer
 
 
@@ -647,7 +660,8 @@ def add_distillation_tokens(
         added['move_tokens'] = tokenizer.add_tokens(all_uci_moves, special_tokens=False)
 
     if added['special_tokens'] or added['move_tokens']:
-        model.resize_token_embeddings(len(tokenizer))
+        # Pad vocab size to multiple of 64 for optimal tensor core utilization
+        model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=64)
 
     return added
 
@@ -860,6 +874,7 @@ def create_distillation_trainer(
     streaming: bool = False,
     teacher: Optional[StockfishTeacher] = None,
     chess_eval_callback: Optional[TrainerCallback] = None,
+    use_unpad: bool = False,
 ):
     """Create the distillation trainer."""
     training_config = config.get('training', {})
@@ -973,6 +988,10 @@ def create_distillation_trainer(
     )
 
     # Data collator - use streaming collator with teacher, or precomputed
+    # Flash Attention packing for efficient variable-length training
+    if use_unpad:
+        print("Flash Attention packing enabled - sequences will be concatenated with position_ids")
+
     if streaming and teacher is not None:
         print("Using streaming collator with on-the-fly Stockfish analysis")
         print(f"  Note: Each batch requires ~{training_config.get('per_device_train_batch_size', 4) * 80}ms for Stockfish analysis")
@@ -980,7 +999,7 @@ def create_distillation_trainer(
             tokenizer=tokenizer,
             teacher=teacher,
             max_length=model_config.get('max_seq_length', 2048),
-            pad_to_multiple_of=8,
+            pad_to_multiple_of=8 if not use_unpad else None,
             max_display_moves=formatting_config.get('max_display_moves', 5),
             randomize_order=formatting_config.get('randomize_order', True),
             include_soft_targets=True,
@@ -990,12 +1009,13 @@ def create_distillation_trainer(
             reasoning_trace_generator=reasoning_trace_generator,
             force_best_move=force_best_move,
             seed=training_config.get('seed', 42),
+            use_flash_attn_packing=use_unpad,
         )
     else:
         data_collator = PrecomputedDistillationCollator(
             tokenizer=tokenizer,
             max_length=model_config.get('max_seq_length', 2048),
-            pad_to_multiple_of=8,
+            pad_to_multiple_of=8 if not use_unpad else None,
             max_display_moves=formatting_config.get('max_display_moves', 5),
             randomize_order=formatting_config.get('randomize_order', True),
             pv_length=formatting_config.get('pv_length', 5),
@@ -1004,6 +1024,7 @@ def create_distillation_trainer(
             rerandomize_reasoning_trace=reasoning_trace_config.get("rerandomize_in_collator", False),
             force_best_move=force_best_move,
             seed=training_config.get('seed', 42),
+            use_flash_attn_packing=use_unpad,
         )
 
     callbacks = []
@@ -1052,6 +1073,10 @@ def main():
                         help='Debug mode with small dataset')
     parser.add_argument('--no-liger', action='store_true',
                         help='Disable Liger kernel optimizations')
+    parser.add_argument('--torch-compile', action='store_true',
+                        help='Enable torch.compile for faster training')
+    parser.add_argument('--unpad', action='store_true',
+                        help='Use unpadded/flash attention (requires flash_attention_2)')
     parser.add_argument('--no-cce', action='store_true',
                         help='Disable Cut Cross Entropy (use standard PyTorch CE)')
     parser.add_argument('--max-steps', type=int, default=None,
@@ -1103,6 +1128,10 @@ def main():
         print(f"Stockfish temp (CP->prob): {distill_config.get('stockfish_temperature', 100.0)}")
     print(f"Floor probability: {distill_config.get('min_probability', 0.001)}")
     print(f"Flash Attention: {config.get('model', {}).get('attn_implementation', 'flash_attention_2')}")
+    use_torch_compile = args.torch_compile or training_config.get('torch_compile', False)
+    use_unpad = args.unpad or training_config.get('use_unpad', False)
+    print(f"torch.compile: {'ENABLED' if use_torch_compile else 'disabled'}")
+    print(f"Unpadded attention: {'ENABLED' if use_unpad else 'disabled'}")
     print("=" * 60)
 
     # Store in config for trainer to use
@@ -1112,7 +1141,11 @@ def main():
 
     # Setup model and tokenizer
     print("\nSetting up model and tokenizer...")
-    model, tokenizer = setup_model_and_tokenizer(config, use_liger=LIGER_AVAILABLE and not args.no_liger)
+    model, tokenizer = setup_model_and_tokenizer(
+        config,
+        use_liger=LIGER_AVAILABLE and not args.no_liger,
+        use_torch_compile=use_torch_compile,
+    )
 
     # Add distillation tokens and build move-to-token mapping
     all_uci_moves = generate_all_uci_moves()
@@ -1306,6 +1339,7 @@ def main():
         streaming=args.streaming,
         teacher=teacher,
         chess_eval_callback=chess_eval_callback,
+        use_unpad=use_unpad,
     )
 
     # Check for resume checkpoint

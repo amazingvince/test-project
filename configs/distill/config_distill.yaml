@@ -45,7 +45,11 @@ training:
 
   # Chess eval generation
   chess_eval_max_new_tokens: 128
-  
+
+  # Performance optimizations
+  torch_compile: false  # Enable torch.compile for faster training (may have warm-up overhead)
+  use_unpad: false  # Flash Attention packing - concatenate sequences with position_ids (up to 2x throughput)
+
   # Saving
   save_steps: 500
   save_total_limit: 3
