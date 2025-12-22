@@ -230,6 +230,12 @@ class FastChessEvalCallback(TrainerCallback):
         eval_batch_size: int = 32,
         max_new_tokens: int = 128,
         max_total_tokens: int = MAX_TOTAL_TOKENS,
+        do_sample: bool = False,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        top_k: Optional[int] = None,
+        min_p: Optional[float] = None,
+        seed: int = 42,
         eval_every_n_steps: int = 500,
         stockfish_path: Optional[str] = None,
         stockfish_workers: int = 8,
@@ -242,6 +248,12 @@ class FastChessEvalCallback(TrainerCallback):
         self.eval_batch_size = int(eval_batch_size)
         self.max_new_tokens = int(max_new_tokens)
         self.max_total_tokens = int(max_total_tokens)
+        self.do_sample = bool(do_sample)
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.min_p = min_p
+        self.seed = int(seed)
         self.eval_every_n_steps = int(eval_every_n_steps)
         self.stockfish_path = stockfish_path
         self.stockfish_workers = int(stockfish_workers)
@@ -327,15 +339,28 @@ class FastChessEvalCallback(TrainerCallback):
                 generate_kwargs.update(
                     {
                         "max_new_tokens": self.max_new_tokens,
-                        "do_sample": False,
-                        "temperature": None,
-                        "top_p": None,
+                        "do_sample": self.do_sample,
                         "pad_token_id": self.tokenizer.pad_token_id,
                         "use_cache": True,
                     }
                 )
                 if eos_token_ids:
                     generate_kwargs["eos_token_id"] = eos_token_ids
+
+                if self.do_sample:
+                    if self.temperature is not None:
+                        generate_kwargs["temperature"] = float(self.temperature)
+                    if self.top_p is not None:
+                        generate_kwargs["top_p"] = float(self.top_p)
+                    if self.top_k is not None:
+                        generate_kwargs["top_k"] = int(self.top_k)
+                    if self.min_p is not None and hasattr(model.generation_config, "min_p"):
+                        generate_kwargs["min_p"] = float(self.min_p)
+
+                    device = inputs["input_ids"].device
+                    generator = torch.Generator(device=device)
+                    generator.manual_seed(self.seed + int(step))
+                    generate_kwargs["generator"] = generator
 
                 outputs = model.generate(**generate_kwargs)
 

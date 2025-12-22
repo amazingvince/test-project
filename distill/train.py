@@ -978,6 +978,12 @@ def create_distillation_trainer(
         push_to_hub=False,
         include_tokens_per_second=True,
 
+        # When resuming from checkpoint, Trainer can spend a long time "skipping"
+        # batches to reach the previous step. With streaming + on-the-fly Stockfish,
+        # that skip work is wasted compute. Prefer continuing at the correct step
+        # but with new streamed samples.
+        ignore_data_skip=True if streaming else training_config.get("ignore_data_skip", False),
+
         # Disable token counting for streaming - soft_targets are non-tensor
         # and cause Accelerate concatenation errors
         include_num_input_tokens_seen=False if streaming else True,
@@ -1260,6 +1266,12 @@ def main():
                     "chess_eval_max_total_tokens",
                     config.get("model", {}).get("max_seq_length", 2048),
                 ),
+                do_sample=training_config.get("chess_eval_do_sample", False),
+                temperature=training_config.get("chess_eval_temperature"),
+                top_p=training_config.get("chess_eval_top_p"),
+                top_k=training_config.get("chess_eval_top_k"),
+                min_p=training_config.get("chess_eval_min_p"),
+                seed=training_config.get("seed", 42),
                 eval_every_n_steps=training_config.get("chess_eval_steps", 500),
                 stockfish_path=stockfish_path,
                 stockfish_workers=eval_config.get("stockfish_workers", 8),

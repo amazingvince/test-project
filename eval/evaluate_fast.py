@@ -175,6 +175,12 @@ def generate_moves_batch(
     tokenizer,
     boards: List[chess.Board],
     max_new_tokens: int = 1024,
+    do_sample: bool = True,
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    top_k: int = 20,
+    min_p: float = 0.0,
+    generator: Optional[torch.Generator] = None,
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
     max_total_tokens: int = MAX_TOTAL_TOKENS,
 ) -> List[Tuple[Optional[str], str]]:
@@ -214,15 +220,22 @@ def generate_moves_batch(
     generate_kwargs.update(
         {
             "max_new_tokens": max_new_tokens,
-            "do_sample": False,
-            "temperature": None,
-            "top_p": None,
+            "do_sample": bool(do_sample),
             "pad_token_id": tokenizer.pad_token_id,
             "use_cache": True,
         }
     )
     if eos_token_ids:
         generate_kwargs["eos_token_id"] = eos_token_ids
+    if generator is not None:
+        generate_kwargs["generator"] = generator
+
+    if do_sample:
+        generate_kwargs["temperature"] = float(temperature)
+        generate_kwargs["top_p"] = float(top_p)
+        generate_kwargs["top_k"] = int(top_k)
+        if hasattr(model.generation_config, "min_p"):
+            generate_kwargs["min_p"] = float(min_p)
 
     # Generate with greedy decoding (faster than sampling)
     outputs = model.generate(**generate_kwargs)
@@ -518,6 +531,12 @@ def evaluate_model(
     batch_size: int = 16,
     max_new_tokens: int = 1024,
     max_total_tokens: int = MAX_TOTAL_TOKENS,
+    do_sample: bool = True,
+    temperature: float = 0.6,
+    top_p: float = 0.95,
+    top_k: int = 20,
+    min_p: float = 0.0,
+    seed: int = 42,
     stockfish_path: Optional[str] = None,
     stockfish_depth: int = 12,
     stockfish_time_ms: int = 100,
@@ -545,6 +564,11 @@ def evaluate_model(
 
     max_input_length = max_total_tokens - max_new_tokens
 
+    generator: Optional[torch.Generator] = None
+    if do_sample:
+        generator = torch.Generator(device=model.device)
+        generator.manual_seed(int(seed))
+
     # Phase 1: Batched model inference
     logger.info("Phase 1: generating moves (batch_size=%s, max_total_tokens=%s, max_input=%s, max_new_tokens=%s)",
                 batch_size, max_total_tokens, max_input_length, max_new_tokens)
@@ -559,6 +583,12 @@ def evaluate_model(
             tokenizer,
             boards,
             max_new_tokens=max_new_tokens,
+            do_sample=do_sample,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            min_p=min_p,
+            generator=generator,
             max_total_tokens=max_total_tokens,
         )
         
@@ -657,6 +687,16 @@ def main():
                         help='Batch size for generation')
     parser.add_argument('--max_new_tokens', type=int, default=1024,
                         help='Max tokens to generate per position')
+    parser.add_argument('--greedy', action='store_true',
+                        help='Use greedy decoding (disables sampling).')
+    parser.add_argument('--temperature', type=float, default=0.6,
+                        help='Sampling temperature (only when not --greedy).')
+    parser.add_argument('--top_p', type=float, default=0.95,
+                        help='Top-p nucleus sampling cutoff (only when not --greedy).')
+    parser.add_argument('--top_k', type=int, default=20,
+                        help='Top-k sampling cutoff (only when not --greedy).')
+    parser.add_argument('--min_p', type=float, default=0.0,
+                        help='Min-p sampling cutoff (only when not --greedy).')
     parser.add_argument('--max_total_tokens', type=int, default=2048,
                        help='Max total tokens (input + generation), default 2048')
     parser.add_argument('--stockfish', type=str, default=None,
@@ -711,6 +751,11 @@ def main():
         tokenizer,
         [warmup_board, warmup_board],
         max_new_tokens=min(64, args.max_new_tokens),
+        do_sample=not args.greedy,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        min_p=args.min_p,
         max_total_tokens=args.max_total_tokens,
     )
     logger.info("Model warmed up")
@@ -726,6 +771,12 @@ def main():
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
         max_total_tokens=args.max_total_tokens,
+        do_sample=not args.greedy,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        top_k=args.top_k,
+        min_p=args.min_p,
+        seed=args.seed,
         stockfish_path=args.stockfish,
         stockfish_depth=args.stockfish_depth,
         stockfish_time_ms=args.stockfish_time,

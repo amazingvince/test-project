@@ -59,6 +59,11 @@ training:
   # Chess eval generation
   chess_eval_max_new_tokens: 1024
   chess_eval_max_total_tokens: 2048
+  chess_eval_do_sample: true
+  chess_eval_temperature: 0.6
+  chess_eval_top_p: 0.95
+  chess_eval_top_k: 20
+  chess_eval_min_p: 0.0
   chess_eval_print_samples: 3
   chess_eval_print_max_chars: 2000
   
