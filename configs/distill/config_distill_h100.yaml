@@ -190,7 +190,7 @@ formatting:
   max_display_moves: 5
 
   # Include the ASCII board in the prompt (higher tokens, may help early training)
-  include_board: true
+  include_board: false
 
   # CRITICAL: Randomize move order to prevent shortcuts
   # Without this, model learns "first move = best"

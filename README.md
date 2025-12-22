@@ -65,9 +65,12 @@ More details: `eval/README.md`
 
 More details: `scripts/README.md`
 
+## Competition Submission
+
+- Global Chess Challenge 2025 (AIcrowd): `competition/global_chess_challenge_2025/README.md`
+
 ## Design Docs
 
 - `docs/chess_reasoning_trace_generator.md`: reasoning trace generator design and knobs
 - `docs/STOCKFISH_EVAL_TRAINING.md`: Stockfish-eval dataset generation and weighting ideas
 - `docs/OPTIMIZATION_GUIDE.md`: performance notes (CCE/Liger/etc.)
-

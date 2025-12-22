@@ -442,6 +442,8 @@ class PrecomputedDistillationCollator:
             'target_move_uci': example['target_move_uci'],
             'legal_moves_uci': example.get('legal_moves_uci', ''),
             'board_utf': example.get('board_utf', ''),
+            'first_legal_move': example.get('first_legal_move', ''),
+            'side_to_move': example.get('side_to_move', ''),
             'source': example.get('source'),
         }
 

@@ -1,0 +1,20 @@
+You are an expert chess player. Choose the best move.
+
+FEN: {{ FEN }}
+Side to move: {{ side_to_move }}
+
+Legal moves (UCI): {{ legal_moves_uci }}
+
+Rules:
+- Put all reasoning inside <think>...</think> (can be multiple sentences).
+- Output exactly one <uci_move>...</uci_move> tag with a single move copied from the legal moves list (no spaces).
+- Do not output anything after the closing </uci_move>.
+- Do not output "resign".
+
+Output format:
+<think>...</think>
+<uci_move>...</uci_move>
+
+Example:
+<think>Develop a piece and contest the center.</think>
+<uci_move>{{ first_legal_move }}</uci_move>

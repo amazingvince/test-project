@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
 
 import chess
 from datasets import DatasetDict, load_from_disk
+from transformers import AutoTokenizer
 
 from src.distill.reasoning_trace import ReasoningTraceGenerator
 from src.distill.stockfish_teacher import MoveAnalysis, PositionAnalysis
@@ -41,6 +42,72 @@ from src.utils.chess_utils import render_board_utf
 
 
 THINK_RE = re.compile(r"<think>\s*(.*?)\s*</think>", flags=re.DOTALL | re.IGNORECASE)
+
+
+def generate_all_uci_moves() -> List[str]:
+    """Generate all UCI move strings, including promotions on back ranks."""
+    moves = []
+    for from_sq in range(64):
+        for to_sq in range(64):
+            if from_sq == to_sq:
+                continue
+            from_str = chess.SQUARE_NAMES[from_sq]
+            to_str = chess.SQUARE_NAMES[to_sq]
+            uci_move = f"{from_str}{to_str}"
+            moves.append(uci_move)
+
+            to_rank = chess.square_rank(to_sq)
+            if to_rank in (0, 7):
+                for promo in ['q', 'r', 'b', 'n']:
+                    moves.append(f"{uci_move}{promo}")
+
+    return moves
+
+
+def add_distillation_tokens(
+    tokenizer,
+    add_move_tokens: bool = True,
+    all_uci_moves: Optional[List[str]] = None,
+) -> Dict[str, int]:
+    """Add distillation tags and optional UCI move tokens to tokenizer."""
+    added = {'special_tokens': 0, 'move_tokens': 0}
+
+    special_tokens = {
+        "additional_special_tokens": ["<think>", "</think>", "<uci_move>", "</uci_move>"]
+    }
+    added['special_tokens'] = tokenizer.add_special_tokens(special_tokens)
+
+    if add_move_tokens:
+        if all_uci_moves is None:
+            all_uci_moves = generate_all_uci_moves()
+        added['move_tokens'] = tokenizer.add_tokens(all_uci_moves, special_tokens=False)
+
+    return added
+
+
+def setup_tokenizer(config: Dict[str, Any]) -> Any:
+    """Setup tokenizer with distillation tokens (matching distill/train.py)."""
+    model_config = config.get('model', {})
+    model_name = model_config.get('name', 'Qwen/Qwen3-0.6B')
+
+    print(f"Loading tokenizer: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Add distillation tokens
+    distill_config = config.get('distillation', {})
+    all_uci_moves = generate_all_uci_moves()
+    added = add_distillation_tokens(
+        tokenizer=tokenizer,
+        add_move_tokens=distill_config.get('add_uci_move_tokens', True),
+        all_uci_moves=all_uci_moves,
+    )
+    print(f"Added tokens: {added['special_tokens']} special, {added['move_tokens']} UCI move tokens")
+    print(f"Tokenizer vocab size: {len(tokenizer)}")
+
+    return tokenizer
 
 
 def _read_yaml(path: Path) -> Dict[str, Any]:
@@ -406,6 +473,9 @@ def main() -> int:
     reasoning_cfg.setdefault("include_opening", True)
     reasoning_cfg.setdefault("include_tablebase", True)
 
+    # Setup tokenizer with distillation tokens
+    tokenizer = setup_tokenizer(config)
+
     download = not args.no_download
     openings_ok, openings_count = ensure_openings(args.openings_dir, download)
     tablebase_ok, tablebase_count = ensure_tablebases(
@@ -507,7 +577,15 @@ def main() -> int:
     lines.append(f"- Openings: `{openings_ok}` (tsv files: `{openings_count}`)")
     lines.append(f"- Tablebases: `{tablebase_ok}` (rtb files: `{tablebase_count}`)")
     lines.append(f"- Trace status: opening=`{trace_status.get('opening_available')}` tablebase=`{trace_status.get('tablebase_available')}`")
+    lines.append(f"- Tokenizer: `{config.get('model', {}).get('name', 'Qwen/Qwen3-0.6B')}` (vocab size: `{len(tokenizer)}`)")
     lines.append("")
+
+    # Token count tracking
+    token_stats = {
+        'input_tokens': [],
+        'output_tokens': [],
+        'total_tokens': [],
+    }
 
     for idx, row in enumerate(rows, start=1):
         fen = row.get("fen", "")
@@ -549,9 +627,21 @@ def main() -> int:
         move_probs = row.get("move_probs", {})
         kl_dist = _format_kl_distribution(move_probs, top_n=args.top_k_moves)
 
+        # Count tokens for input and output
+        input_token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+        output_token_ids = tokenizer.encode(full_response, add_special_tokens=False)
+        input_token_count = len(input_token_ids)
+        output_token_count = len(output_token_ids)
+        total_token_count = input_token_count + output_token_count
+
+        token_stats['input_tokens'].append(input_token_count)
+        token_stats['output_tokens'].append(output_token_count)
+        token_stats['total_tokens'].append(total_token_count)
+
         lines.append(f"## Sample {idx}")
         lines.append(f"- **Phase**: `{phase}` | source: `{source}` | move: `{move_number}` | ELO: `{white_elo}`/`{black_elo}`")
         lines.append(f"- fen: `{fen}`")
+        lines.append(f"- **Tokens**: input=`{input_token_count}`, output=`{output_token_count}`, total=`{total_token_count}`")
         lines.append("")
         lines.append("### Board")
         lines.append(_code_block(board_utf))
@@ -577,6 +667,35 @@ def main() -> int:
     lines.append(f"- Endgame positions: `{phase_counts['endgame']}` ({100*phase_counts['endgame']/len(rows):.1f}%)")
     lines.append(f"- Opening book available: `{trace_status.get('opening_available')}`")
     lines.append(f"- Tablebase available: `{trace_status.get('tablebase_available')}`")
+    lines.append("")
+
+    # Token statistics
+    def _compute_stats(values: List[int]) -> Dict[str, float]:
+        if not values:
+            return {'mean': 0, 'min': 0, 'max': 0, 'std': 0, 'sum': 0}
+        n = len(values)
+        total = sum(values)
+        mean = total / n
+        min_val = min(values)
+        max_val = max(values)
+        variance = sum((x - mean) ** 2 for x in values) / n
+        std = variance ** 0.5
+        return {'mean': mean, 'min': min_val, 'max': max_val, 'std': std, 'sum': total}
+
+    lines.append("### Token Statistics")
+    lines.append("")
+    lines.append("| Metric | Input Tokens | Output Tokens | Total Tokens |")
+    lines.append("|--------|-------------|---------------|--------------|")
+
+    input_stats = _compute_stats(token_stats['input_tokens'])
+    output_stats = _compute_stats(token_stats['output_tokens'])
+    total_stats = _compute_stats(token_stats['total_tokens'])
+
+    lines.append(f"| Mean | {input_stats['mean']:.1f} | {output_stats['mean']:.1f} | {total_stats['mean']:.1f} |")
+    lines.append(f"| Std Dev | {input_stats['std']:.1f} | {output_stats['std']:.1f} | {total_stats['std']:.1f} |")
+    lines.append(f"| Min | {input_stats['min']} | {output_stats['min']} | {total_stats['min']} |")
+    lines.append(f"| Max | {input_stats['max']} | {output_stats['max']} | {total_stats['max']} |")
+    lines.append(f"| Sum | {input_stats['sum']} | {output_stats['sum']} | {total_stats['sum']} |")
     lines.append("")
 
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

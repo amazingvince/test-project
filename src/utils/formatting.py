@@ -21,24 +21,26 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 
-DEFAULT_PROMPT_TEMPLATE = """You are an expert chess player. Here is the position in FEN format:
-{fen}
+DEFAULT_PROMPT_TEMPLATE = """You are an expert chess player. Choose the best move.
 
-Legal moves: {legal_moves}
+FEN: {fen}
+Side to move: {side_to_move}
 
-Board (ASCII):
-{board}
+Legal moves (UCI): {legal_moves}
 
-Select the best move. Keep your thinking to 2 sentences or less, then output your chosen move.
+Rules:
+- Put all reasoning inside <think>...</think> (can be multiple sentences).
+- Output exactly one <uci_move>...</uci_move> tag with a single move copied from the legal moves list (no spaces).
+- Do not output anything after the closing </uci_move>.
+- Do not output "resign".
 
-CRITICAL: Your UCI move must always be one of the moves from legal_moves_uci, with no spaces.
+Output format:
+<think>...</think>
+<uci_move>...</uci_move>
 
 Example:
-<uci_move>{example_move}</uci_move>
-
-Format:
-<think>brief thinking (2 sentences max)</think>
-<uci_move>your_move</uci_move>"""
+<think>Develop a piece and contest the center.</think>
+<uci_move>{example_move}</uci_move>"""
 
 DEFAULT_RESPONSE_TEMPLATE = "<think></think>\n<uci_move>{move}</uci_move>"
 
@@ -60,6 +62,7 @@ def position_to_messages(
         legal_moves=position["legal_moves_uci"],
         board=position["board_utf"],
         example_move=position["first_legal_move"],
+        side_to_move=position["side_to_move"],
     )
     assistant_content = response_template.format(move=position["target_move_uci"])
 
@@ -162,4 +165,3 @@ def format_example_for_display(position: Dict[str, Any]) -> str:
         "=" * 60,
     ]
     return "\n".join(parts)
-

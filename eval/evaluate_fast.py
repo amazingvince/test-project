@@ -118,12 +118,14 @@ def build_prompts_batch(
         legal_moves = get_legal_moves_uci(board)
         board_utf = render_board_utf(board)
         first_legal = get_first_legal_move(board) or ""
+        side_to_move = "White" if board.turn == chess.WHITE else "Black"
         
         user_content = prompt_template.format(
             fen=fen,
             legal_moves=legal_moves,
             board=board_utf,
-            example_move=first_legal
+            example_move=first_legal,
+            side_to_move=side_to_move,
         )
         
         messages = [{"role": "user", "content": user_content}]

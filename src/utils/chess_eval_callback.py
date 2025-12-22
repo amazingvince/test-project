@@ -154,6 +154,7 @@ def _build_prompts(tokenizer, positions: List[EvalPosition]) -> Tuple[List[str],
             legal_moves=get_legal_moves_uci(board),
             board=render_board_utf(board),
             example_move=get_first_legal_move(board) or "",
+            side_to_move="White" if board.turn == chess.WHITE else "Black",
         )
         prompt = tokenizer.apply_chat_template(
             [{"role": "user", "content": user_content}],

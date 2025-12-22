@@ -152,22 +152,26 @@ elo_weights:
 # =============================================================================
 prompt:
   template: |
-    You are an expert chess player. Here is the position in FEN format:
-    {fen}
+    You are an expert chess player. Choose the best move.
 
-    Legal moves: {legal_moves}
+    FEN: {fen}
+    Side to move: {side_to_move}
 
-    Board looks like this right now
-    {board}
+    Legal moves (UCI): {legal_moves}
 
-    Select the best move. Keep your thinking to 2 sentences or less, then output your chosen move.
+    Rules:
+    - Put all reasoning inside <think>...</think> (can be multiple sentences).
+    - Output exactly one <uci_move>...</uci_move> tag with a single move copied from the legal moves list (no spaces).
+    - Do not output anything after the closing </uci_move>.
+    - Do not output "resign".
 
-    CRITICAL: Your UCI move must always be one of the moves from legal_moves_uci. With no spaces in between.
+    Output format:
+    <think>...</think>
+    <uci_move>...</uci_move>
 
-    An example of a valid move for this position is <uci_move>{example_move}</uci_move>.
-    Format:
-    <think>brief thinking (2 sentences max)</think>
-    <uci_move>your_move</uci_move>
+    Example:
+    <think>Develop a piece and contest the center.</think>
+    <uci_move>{example_move}</uci_move>
 
   response_template: "<think></think>\n<uci_move>{move}</uci_move>"
 

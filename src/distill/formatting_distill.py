@@ -14,34 +14,52 @@ import chess
 
 from .reasoning_trace import ReasoningTraceGenerator
 from .stockfish_teacher import MoveAnalysis, PositionAnalysis
-from ..utils.chess_utils import get_legal_moves_uci, render_board_utf
+from ..utils.chess_utils import get_first_legal_move, get_legal_moves_uci, render_board_utf
 
-DISTILLATION_PROMPT_TEMPLATE = """You are an expert chess player. Analyze this position and select the best move.
+DISTILLATION_PROMPT_TEMPLATE = """You are an expert chess player. Choose the best move.
 
-Position (FEN): {fen}
-
-Legal moves: {legal_moves}
+FEN: {fen}
+Side to move: {side_to_move}
 
 Board:
 {board}
 
-Analyze the candidate moves, evaluate their quality, then select the best one.
+Legal moves (UCI): {legal_moves}
+
+Rules:
+- Put all reasoning inside <think>...</think> (can be multiple sentences).
+- Output exactly one <uci_move>...</uci_move> tag with a single move copied from the legal moves list (no spaces).
+- Do not output anything after the closing </uci_move>.
+- Do not output "resign".
 
 Output format:
-<think>your analysis of the moves</think>
-<uci_move>your_chosen_move</uci_move>"""
+<think>...</think>
+<uci_move>...</uci_move>
 
-DISTILLATION_PROMPT_TEMPLATE_NO_BOARD = """You are an expert chess player. Analyze this position and select the best move.
+Example:
+<think>Develop a piece and contest the center.</think>
+<uci_move>{example_move}</uci_move>"""
 
-Position (FEN): {fen}
+DISTILLATION_PROMPT_TEMPLATE_NO_BOARD = """You are an expert chess player. Choose the best move.
 
-Legal moves: {legal_moves}
+FEN: {fen}
+Side to move: {side_to_move}
 
-Analyze the candidate moves, evaluate their quality, then select the best one.
+Legal moves (UCI): {legal_moves}
+
+Rules:
+- Put all reasoning inside <think>...</think> (can be multiple sentences).
+- Output exactly one <uci_move>...</uci_move> tag with a single move copied from the legal moves list (no spaces).
+- Do not output anything after the closing </uci_move>.
+- Do not output "resign".
 
 Output format:
-<think>your analysis of the moves</think>
-<uci_move>your_chosen_move</uci_move>"""
+<think>...</think>
+<uci_move>...</uci_move>
+
+Example:
+<think>Develop a piece and contest the center.</think>
+<uci_move>{example_move}</uci_move>"""
 
 
 DISTILLATION_RESPONSE_TEMPLATE = """<think>
@@ -273,6 +291,19 @@ def position_to_messages_distill(
     Returns:
         Dict with 'messages' key containing chat format
     """
+    fen = position["fen"]
+    fen_parts = fen.split()
+    side_to_move = (
+        position.get("side_to_move")
+        or ("White" if len(fen_parts) > 1 and fen_parts[1] == "w" else "Black")
+    )
+    legal_moves_uci = position["legal_moves_uci"]
+    example_move = (
+        position.get("first_legal_move")
+        or position.get("example_move")
+        or (legal_moves_uci.split()[0] if legal_moves_uci else "")
+    )
+
     target_move_uci = position['target_move_uci']
     move_for_output = target_move_uci
     if force_best_move and analysis.best_move_uci:
@@ -310,14 +341,18 @@ def position_to_messages_distill(
     # Format user content
     if include_board:
         user_content = prompt_template.format(
-            fen=position['fen'],
-            legal_moves=position['legal_moves_uci'],
+            fen=fen,
+            legal_moves=legal_moves_uci,
             board=position['board_utf'],
+            side_to_move=side_to_move,
+            example_move=example_move,
         )
     else:
         user_content = DISTILLATION_PROMPT_TEMPLATE_NO_BOARD.format(
-            fen=position['fen'],
-            legal_moves=position['legal_moves_uci'],
+            fen=fen,
+            legal_moves=legal_moves_uci,
+            side_to_move=side_to_move,
+            example_move=example_move,
         )
     
     # Format assistant content
@@ -364,6 +399,8 @@ def create_distillation_example(
 
     # Get legal moves
     legal_moves_uci = get_legal_moves_uci(board)
+    first_legal_move = get_first_legal_move(board) or ""
+    side_to_move = "White" if board.turn == chess.WHITE else "Black"
 
     move_for_output = target_move_uci
     if force_best_move and analysis.best_move_uci:
@@ -374,6 +411,8 @@ def create_distillation_example(
         'target_move_uci': move_for_output,
         'legal_moves_uci': legal_moves_uci,
         'board_utf': board_utf,
+        'first_legal_move': first_legal_move,
+        'side_to_move': side_to_move,
     }
     if source is not None:
         position['source'] = source
@@ -415,6 +454,8 @@ def create_distillation_example(
         'target_move_uci': move_for_output,
         'legal_moves_uci': legal_moves_uci,
         'board_utf': board_utf,
+        'first_legal_move': first_legal_move,
+        'side_to_move': side_to_move,
         
         # Analysis data
         'best_move_uci': analysis.best_move_uci,
@@ -488,4 +529,3 @@ def format_example_for_display(example: Dict[str, Any]) -> str:
     output.append("=" * 70)
     
     return "\n".join(output)
-
