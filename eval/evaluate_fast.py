@@ -33,7 +33,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 logger = logging.getLogger(__name__)
 
 # Maximum total tokens (input + generation) during evaluation
-MAX_TOTAL_TOKENS = 1024
+MAX_TOTAL_TOKENS = 2048
 
 from src.utils.chess_utils import (
     render_board_utf, 
@@ -174,7 +174,7 @@ def generate_moves_batch(
     model,
     tokenizer,
     boards: List[chess.Board],
-    max_new_tokens: int = 64,  # Reduced - we only need the move
+    max_new_tokens: int = 1024,
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
     max_total_tokens: int = MAX_TOTAL_TOKENS,
 ) -> List[Tuple[Optional[str], str]]:
@@ -197,24 +197,42 @@ def generate_moves_batch(
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
     
     input_length = inputs['input_ids'].shape[1]
-    
-    # Generate with greedy decoding (faster than sampling)
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_new_tokens,
-        do_sample=False,  # Greedy is faster
-        temperature=None,
-        top_p=None,
-        pad_token_id=tokenizer.pad_token_id,
-        use_cache=True,  # Use KV cache
+
+    eos_token_ids: List[int] = []
+    if tokenizer.eos_token_id is not None:
+        eos_token_ids.append(int(tokenizer.eos_token_id))
+    close_tag_id = tokenizer.convert_tokens_to_ids("</uci_move>")
+    if (
+        isinstance(close_tag_id, int)
+        and close_tag_id >= 0
+        and (tokenizer.unk_token_id is None or close_tag_id != tokenizer.unk_token_id)
+    ):
+        eos_token_ids.append(int(close_tag_id))
+    eos_token_ids = list(dict.fromkeys(eos_token_ids))
+
+    generate_kwargs = dict(inputs)
+    generate_kwargs.update(
+        {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": False,
+            "temperature": None,
+            "top_p": None,
+            "pad_token_id": tokenizer.pad_token_id,
+            "use_cache": True,
+        }
     )
+    if eos_token_ids:
+        generate_kwargs["eos_token_id"] = eos_token_ids
+
+    # Generate with greedy decoding (faster than sampling)
+    outputs = model.generate(**generate_kwargs)
     
     # Decode responses
     results = []
     for i, output in enumerate(outputs):
         response = tokenizer.decode(
             output[input_length:], 
-            skip_special_tokens=True
+            skip_special_tokens=False
         )
         uci_move = extract_uci_from_response(response)
         results.append((uci_move, response))
@@ -498,7 +516,7 @@ def evaluate_model(
     tokenizer,
     positions: List[Dict[str, Any]],
     batch_size: int = 16,
-    max_new_tokens: int = 64,
+    max_new_tokens: int = 1024,
     max_total_tokens: int = MAX_TOTAL_TOKENS,
     stockfish_path: Optional[str] = None,
     stockfish_depth: int = 12,
@@ -515,7 +533,7 @@ def evaluate_model(
         positions: List of position dicts with 'fen' and 'target_move'
         batch_size: Batch size for generation
         max_new_tokens: Max new tokens to generate
-        max_total_tokens: Max total tokens (input + generation), default 1024
+        max_total_tokens: Max total tokens (input + generation), default 2048
         stockfish_path: Optional path to Stockfish for ACPL calculation
         stockfish_depth: Stockfish search depth
         stockfish_time_ms: Stockfish time per move in ms
@@ -637,10 +655,10 @@ def main():
                         help='Games ratio when source=mixed (overrides config)')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size for generation')
-    parser.add_argument('--max_new_tokens', type=int, default=64,
+    parser.add_argument('--max_new_tokens', type=int, default=1024,
                         help='Max tokens to generate per position')
-    parser.add_argument('--max_total_tokens', type=int, default=1024,
-                        help='Max total tokens (input + generation), default 1024')
+    parser.add_argument('--max_total_tokens', type=int, default=2048,
+                       help='Max total tokens (input + generation), default 2048')
     parser.add_argument('--stockfish', type=str, default=None,
                         help='Path to Stockfish binary')
     parser.add_argument('--stockfish_depth', type=int, default=12,
@@ -688,7 +706,13 @@ def main():
     # Warmup (important for torch.compile)
     logger.info("Warming up model...")
     warmup_board = chess.Board()
-    _ = generate_moves_batch(model, tokenizer, [warmup_board, warmup_board])
+    _ = generate_moves_batch(
+        model,
+        tokenizer,
+        [warmup_board, warmup_board],
+        max_new_tokens=min(64, args.max_new_tokens),
+        max_total_tokens=args.max_total_tokens,
+    )
     logger.info("Model warmed up")
     
     # Evaluate

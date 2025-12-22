@@ -60,7 +60,7 @@ training:
   chess_eval_max_new_tokens: 1024
   chess_eval_max_total_tokens: 2048
   chess_eval_print_samples: 3
-  chess_eval_print_max_chars: 600
+  chess_eval_print_max_chars: 2000
   
   # Saving
   save_steps: 500

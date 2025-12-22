@@ -115,7 +115,7 @@ def validate_uci_move(board: chess.Board, uci_move: str) -> bool:
     return move in board.legal_moves
 
 
-_UCI_TAG_RE = re.compile(r"<uci_move>([a-h][1-8][a-h][1-8][qrbn]?)</uci_move>")
+_UCI_TAG_RE = re.compile(r"<uci_move>\s*([a-h][1-8][a-h][1-8][qrbn]?)\s*</uci_move>")
 
 
 def extract_uci_from_response(response: str) -> Optional[str]:
@@ -127,7 +127,9 @@ def extract_uci_from_response(response: str) -> Optional[str]:
     """
 
     match = _UCI_TAG_RE.search(response or "")
-    return match.group(1) if match else None
+    if not match:
+        return None
+    return match.group(1).lower()
 
 
 def position_from_board(

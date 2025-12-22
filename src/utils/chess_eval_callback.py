@@ -311,18 +311,36 @@ class FastChessEvalCallback(TrainerCallback):
                 inputs = {k: v.to(model.device) for k, v in inputs.items()}
                 prompt_len = inputs["input_ids"].shape[1]
 
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    do_sample=False,
-                    temperature=None,
-                    top_p=None,
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    use_cache=True,
+                eos_token_ids: List[int] = []
+                if self.tokenizer.eos_token_id is not None:
+                    eos_token_ids.append(int(self.tokenizer.eos_token_id))
+                close_tag_id = self.tokenizer.convert_tokens_to_ids("</uci_move>")
+                if (
+                    isinstance(close_tag_id, int)
+                    and close_tag_id >= 0
+                    and (self.tokenizer.unk_token_id is None or close_tag_id != self.tokenizer.unk_token_id)
+                ):
+                    eos_token_ids.append(int(close_tag_id))
+                eos_token_ids = list(dict.fromkeys(eos_token_ids))
+
+                generate_kwargs = dict(inputs)
+                generate_kwargs.update(
+                    {
+                        "max_new_tokens": self.max_new_tokens,
+                        "do_sample": False,
+                        "temperature": None,
+                        "top_p": None,
+                        "pad_token_id": self.tokenizer.pad_token_id,
+                        "use_cache": True,
+                    }
                 )
+                if eos_token_ids:
+                    generate_kwargs["eos_token_id"] = eos_token_ids
+
+                outputs = model.generate(**generate_kwargs)
 
                 for i, seq in enumerate(outputs):
-                    response = self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=True)
+                    response = self.tokenizer.decode(seq[prompt_len:], skip_special_tokens=False)
                     predicted = extract_uci_from_response(response)
                     board = boards[i]
                     target = batch_positions[i].target_move_uci
@@ -475,7 +493,13 @@ class FastChessEvalCallback(TrainerCallback):
 
             response = (r.get("response_text") or "").strip()
             if self.print_max_chars and len(response) > self.print_max_chars:
-                response = response[: self.print_max_chars].rstrip() + "…"
+                head_chars = max(1, self.print_max_chars // 2)
+                tail_chars = max(1, self.print_max_chars - head_chars)
+                response = (
+                    response[:head_chars].rstrip()
+                    + "\n...\n"
+                    + response[-tail_chars:].lstrip()
+                )
             if response:
                 print("Response:")
                 print(response)
