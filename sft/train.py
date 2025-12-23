@@ -290,6 +290,13 @@ class WeightedCCETrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.use_cce = use_cce and CCE_AVAILABLE
         self._warned = False
+
+        # HF Trainer will *skip* dividing the loss by gradient_accumulation_steps when it thinks the
+        # loss is already normalized via `num_items_in_batch` (i.e. `model_accepts_loss_kwargs=True`).
+        #
+        # This trainer computes a per-sample weighted mean loss and intentionally does not use
+        # `num_items_in_batch`, so we must force the Trainer to apply the standard GA scaling.
+        self.model_accepts_loss_kwargs = False
     
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
