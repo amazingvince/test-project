@@ -116,6 +116,7 @@ def validate_uci_move(board: chess.Board, uci_move: str) -> bool:
 
 
 _UCI_TAG_RE = re.compile(r"<uci_move>\s*([a-h][1-8][a-h][1-8][qrbn]?)\s*</uci_move>")
+_UCI_BARE_RE = re.compile(r"(?i)\b([a-h][1-8][a-h][1-8][qrbn]?)\b")
 
 
 def extract_uci_from_response(response: str) -> Optional[str]:
@@ -126,10 +127,18 @@ def extract_uci_from_response(response: str) -> Optional[str]:
         <uci_move>e2e4</uci_move>
     """
 
-    match = _UCI_TAG_RE.search(response or "")
-    if not match:
+    text = response or ""
+    match = _UCI_TAG_RE.search(text)
+    if match:
+        return match.group(1).lower()
+
+    # Fallback: some models will emit a bare UCI move (often inside <think> ... </think>)
+    # before they learn the strict `<uci_move>...</uci_move>` format. Returning the last
+    # match keeps evaluation usable while we still track format compliance separately.
+    matches = list(_UCI_BARE_RE.finditer(text))
+    if not matches:
         return None
-    return match.group(1).lower()
+    return matches[-1].group(1).lower()
 
 
 def trim_generated_token_ids(

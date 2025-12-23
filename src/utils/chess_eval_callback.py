@@ -190,6 +190,13 @@ def _compute_basic_metrics(results: List[Dict[str, Any]]) -> EvalMetrics:
     )
 
 
+def _compute_format_rate(results: List[Dict[str, Any]]) -> float:
+    total = len(results)
+    if not total:
+        return 0.0
+    return sum(1 for r in results if r.get("has_uci_tag")) / total
+
+
 def _compute_acpl_by_side(results: List[Dict[str, Any]]) -> Dict[str, Optional[float]]:
     """
     Compute Average Centipawn Loss split by side to move.
@@ -422,11 +429,14 @@ class FastChessEvalCallback(TrainerCallback):
                         pad_token_id=self.tokenizer.pad_token_id,
                     )
                     response = self.tokenizer.decode(trimmed_ids, skip_special_tokens=False)
+                    has_uci_tag = "<uci_move>" in response and "</uci_move>" in response
                     predicted = extract_uci_from_response(response)
                     board = boards[i]
                     target = batch_positions[i].target_move_uci
-                    is_legal = bool(predicted) and validate_uci_move(board, predicted)
-                    is_correct = bool(predicted) and (predicted == target)
+                    is_legal_loose = bool(predicted) and validate_uci_move(board, predicted)
+                    is_correct_loose = bool(predicted) and (predicted == target)
+                    is_legal = bool(has_uci_tag) and is_legal_loose
+                    is_correct = bool(has_uci_tag) and is_correct_loose
                     results.append(
                         {
                             "fen": board.fen(),
@@ -435,6 +445,9 @@ class FastChessEvalCallback(TrainerCallback):
                             "target_move": target,
                             "is_legal": is_legal,
                             "is_correct": is_correct,
+                            "has_uci_tag": has_uci_tag,
+                            "is_legal_loose": is_legal_loose,
+                            "is_correct_loose": is_correct_loose,
                             "response_text": response,
                             "cpl": None,
                             "is_white": board.turn == chess.WHITE,
@@ -461,7 +474,18 @@ class FastChessEvalCallback(TrainerCallback):
                 stockfish_seconds += time.perf_counter() - stockfish_started
 
             metrics = _compute_basic_metrics(results)
+            format_rate = _compute_format_rate(results)
             side_metrics = _compute_acpl_by_side(results)
+            metrics_loose = _compute_basic_metrics(
+                [
+                    {
+                        **r,
+                        "is_legal": bool(r.get("is_legal_loose")),
+                        "is_correct": bool(r.get("is_correct_loose")),
+                    }
+                    for r in results
+                ]
+            )
 
             prefix = "final/" if final else ""
             eval_seconds = time.perf_counter() - eval_started
@@ -475,6 +499,12 @@ class FastChessEvalCallback(TrainerCallback):
                 eval_seconds,
                 gen_seconds,
                 stockfish_seconds,
+            )
+            logger.info(
+                "  format=<uci_move>: %.2f%%  (loose: legal=%.2f%% acc=%.2f%%)",
+                format_rate * 100,
+                metrics_loose.legal_move_rate * 100,
+                metrics_loose.accuracy * 100,
             )
             if prompt_truncations:
                 logger.warning(
@@ -503,12 +533,26 @@ class FastChessEvalCallback(TrainerCallback):
                 per_source.setdefault(r["source"] or "unknown", []).append(r)
             for source, rows in sorted(per_source.items()):
                 sm = _compute_basic_metrics(rows)
+                sm_format = _compute_format_rate(rows)
+                sm_loose = _compute_basic_metrics(
+                    [
+                        {
+                            **r,
+                            "is_legal": bool(r.get("is_legal_loose")),
+                            "is_correct": bool(r.get("is_correct_loose")),
+                        }
+                        for r in rows
+                    ]
+                )
                 sm_side = _compute_acpl_by_side(rows)
                 logger.info(
-                    "  source=%s legal=%.2f%% acc=%.2f%% acpl=%s (n=%s)",
+                    "  source=%s legal=%.2f%% acc=%.2f%% format=%.2f%% (loose legal=%.2f%% acc=%.2f%%) acpl=%s (n=%s)",
                     source,
                     sm.legal_move_rate * 100,
                     sm.accuracy * 100,
+                    sm_format * 100,
+                    sm_loose.legal_move_rate * 100,
+                    sm_loose.accuracy * 100,
                     f"{sm.acpl:.1f}" if sm.acpl is not None else "n/a",
                     sm.acpl_n,
                 )
@@ -534,6 +578,9 @@ class FastChessEvalCallback(TrainerCallback):
                 payload: Dict[str, float] = {
                     f"{prefix}chess/legal_move_rate": metrics.legal_move_rate,
                     f"{prefix}chess/accuracy": metrics.accuracy,
+                    f"{prefix}chess/format_rate": format_rate,
+                    f"{prefix}chess/legal_move_rate_loose": metrics_loose.legal_move_rate,
+                    f"{prefix}chess/accuracy_loose": metrics_loose.accuracy,
                     f"{prefix}chess/eval_seconds": eval_seconds,
                     f"{prefix}chess/eval_gen_seconds": gen_seconds,
                     f"{prefix}chess/eval_stockfish_seconds": stockfish_seconds,
@@ -546,9 +593,23 @@ class FastChessEvalCallback(TrainerCallback):
                     payload[f"{prefix}chess/acpl_black"] = side_metrics["acpl_black"]
                 for source, rows in per_source.items():
                     sm = _compute_basic_metrics(rows)
+                    sm_format = _compute_format_rate(rows)
+                    sm_loose = _compute_basic_metrics(
+                        [
+                            {
+                                **r,
+                                "is_legal": bool(r.get("is_legal_loose")),
+                                "is_correct": bool(r.get("is_correct_loose")),
+                            }
+                            for r in rows
+                        ]
+                    )
                     sm_side = _compute_acpl_by_side(rows)
                     payload[f"{prefix}chess/{source}_legal_move_rate"] = sm.legal_move_rate
                     payload[f"{prefix}chess/{source}_accuracy"] = sm.accuracy
+                    payload[f"{prefix}chess/{source}_format_rate"] = sm_format
+                    payload[f"{prefix}chess/{source}_legal_move_rate_loose"] = sm_loose.legal_move_rate
+                    payload[f"{prefix}chess/{source}_accuracy_loose"] = sm_loose.accuracy
                     if sm.acpl is not None:
                         payload[f"{prefix}chess/{source}_acpl"] = sm.acpl
                     if sm_side["acpl_white"] is not None:
@@ -589,10 +650,16 @@ class FastChessEvalCallback(TrainerCallback):
             target = r.get("target_move") or "<none>"
             source = r.get("source") or "unknown"
             is_legal = bool(r.get("is_legal"))
+            is_legal_loose = bool(r.get("is_legal_loose"))
             is_correct = bool(r.get("is_correct"))
+            is_correct_loose = bool(r.get("is_correct_loose"))
+            has_uci_tag = bool(r.get("has_uci_tag"))
             cpl = r.get("cpl")
 
-            print(f"\n[{i}/{n}] source={source} legal={is_legal} correct={is_correct} cpl={cpl if cpl is not None else 'n/a'}")
+            print(
+                f\"\n[{i}/{n}] source={source} format={has_uci_tag} legal={is_legal} correct={is_correct} \"
+                f\"(loose legal={is_legal_loose} correct={is_correct_loose}) cpl={cpl if cpl is not None else 'n/a'}\"
+            )
             if fen:
                 print(f"FEN: {fen}")
             if board is not None:

@@ -54,8 +54,11 @@ class EvalResult:
     source: str
     predicted_move: Optional[str]
     target_move: str
+    has_uci_tag: bool
     is_legal: bool
     is_correct: bool
+    is_legal_loose: bool
+    is_correct_loose: bool
     model_centipawn_loss: Optional[int]
     response_text: str
 
@@ -628,12 +631,12 @@ def evaluate_model(
             pos = batch_positions[j]
             board = boards[j]
             source = pos.get('source', 'unknown')
-            
-            is_legal = False
-            if predicted:
-                is_legal = validate_uci_move(board, predicted)
-            
-            is_correct = predicted == pos['target_move']
+
+            has_uci_tag = "<uci_move>" in response and "</uci_move>" in response
+            is_legal_loose = bool(predicted) and validate_uci_move(board, predicted) if predicted else False
+            is_correct_loose = bool(predicted) and (predicted == pos['target_move'])
+            is_legal = bool(has_uci_tag) and is_legal_loose
+            is_correct = bool(has_uci_tag) and is_correct_loose
             is_white = board.turn == chess.WHITE
             
             all_predictions.append({
@@ -642,8 +645,11 @@ def evaluate_model(
                 'target_move': pos['target_move'],
                 'predicted_move': predicted,
                 'response': response,
+                'has_uci_tag': has_uci_tag,
                 'is_legal': is_legal,
                 'is_correct': is_correct,
+                'is_legal_loose': is_legal_loose,
+                'is_correct_loose': is_correct_loose,
                 'is_white': is_white,
                 'cpl': None,
                 'source': source,
@@ -681,8 +687,42 @@ def evaluate_model(
     sources = sorted(set(p['source'] for p in all_predictions))
     for source in sources:
         subset = [p for p in all_predictions if p['source'] == source]
-        metrics_by_source[source] = compute_metrics_for_predictions(subset)
+        sm = compute_metrics_for_predictions(subset)
+        sm["format_rate"] = (
+            sum(1 for p in subset if p.get("has_uci_tag")) / len(subset) if subset else 0.0
+        )
+        sm_loose = compute_metrics_for_predictions(
+            [
+                {
+                    **p,
+                    "is_legal": bool(p.get("is_legal_loose")),
+                    "is_correct": bool(p.get("is_correct_loose")),
+                }
+                for p in subset
+            ]
+        )
+        sm["legal_move_rate_loose"] = sm_loose["legal_move_rate"]
+        sm["accuracy_loose"] = sm_loose["accuracy"]
+        metrics_by_source[source] = sm
     metrics['by_source'] = metrics_by_source
+
+    metrics["format_rate"] = (
+        sum(1 for p in all_predictions if p.get("has_uci_tag")) / len(all_predictions)
+        if all_predictions
+        else 0.0
+    )
+    metrics_loose = compute_metrics_for_predictions(
+        [
+            {
+                **p,
+                "is_legal": bool(p.get("is_legal_loose")),
+                "is_correct": bool(p.get("is_correct_loose")),
+            }
+            for p in all_predictions
+        ]
+    )
+    metrics["legal_move_rate_loose"] = metrics_loose["legal_move_rate"]
+    metrics["accuracy_loose"] = metrics_loose["accuracy"]
     
     # Build results
     for p in all_predictions:
@@ -691,8 +731,11 @@ def evaluate_model(
             source=p['source'],
             predicted_move=p['predicted_move'],
             target_move=p['target_move'],
+            has_uci_tag=bool(p.get('has_uci_tag')),
             is_legal=p['is_legal'],
             is_correct=p['is_correct'],
+            is_legal_loose=bool(p.get('is_legal_loose')),
+            is_correct_loose=bool(p.get('is_correct_loose')),
             model_centipawn_loss=p['cpl'],
             response_text=p['response']
         ))
@@ -823,6 +866,14 @@ def main():
     logger.info("Total positions: %s", metrics["total_positions"])
     logger.info("Legal move rate: %.2f%%", metrics["legal_move_rate"] * 100)
     logger.info("Accuracy: %.2f%%", metrics["accuracy"] * 100)
+    if "format_rate" in metrics:
+        logger.info("Format rate (<uci_move>): %.2f%%", metrics["format_rate"] * 100)
+    if "legal_move_rate_loose" in metrics and "accuracy_loose" in metrics:
+        logger.info(
+            "Loose (fallback) legal: %.2f%%  acc: %.2f%%",
+            metrics["legal_move_rate_loose"] * 100,
+            metrics["accuracy_loose"] * 100,
+        )
     
     if 'acpl' in metrics:
         logger.info("ACPL: %.1f (n=%s)", metrics["acpl"], metrics["acpl_n"])
@@ -841,6 +892,14 @@ def main():
             logger.info("  Total positions: %s", sm["total_positions"])
             logger.info("  Legal move rate: %.2f%%", sm["legal_move_rate"] * 100)
             logger.info("  Accuracy: %.2f%%", sm["accuracy"] * 100)
+            if "format_rate" in sm:
+                logger.info("  Format rate (<uci_move>): %.2f%%", sm["format_rate"] * 100)
+            if "legal_move_rate_loose" in sm and "accuracy_loose" in sm:
+                logger.info(
+                    "  Loose (fallback) legal: %.2f%%  acc: %.2f%%",
+                    sm["legal_move_rate_loose"] * 100,
+                    sm["accuracy_loose"] * 100,
+                )
             if 'acpl' in sm:
                 logger.info("  ACPL: %.1f (n=%s)", sm["acpl"], sm.get("acpl_n", 0))
     

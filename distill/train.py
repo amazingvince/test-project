@@ -548,8 +548,9 @@ class DistillationTrainer(Trainer):
             logs['distill/soft_loss'] = self._accumulated_metrics['soft_loss'] / self._metric_count
             logs['distill/hard_loss'] = self._accumulated_metrics['hard_loss'] / self._metric_count
             logs['distill/move_pos_found'] = self._accumulated_metrics['move_pos_found'] / self._metric_count
-            logs['distill/mapped_prob'] = self._accumulated_metrics['mapped_prob'] / self._metric_count
-            logs['distill/mapped_move_frac'] = self._accumulated_metrics['mapped_move_frac'] / self._metric_count
+            if self.move_distill_mode == "move_token":
+                logs['distill/mapped_prob'] = self._accumulated_metrics['mapped_prob'] / self._metric_count
+                logs['distill/mapped_move_frac'] = self._accumulated_metrics['mapped_move_frac'] / self._metric_count
 
             if self._accumulated_metrics['top1_agreement'] > 0:
                 logs['distill/top1_agreement'] = self._accumulated_metrics['top1_agreement'] / (self._metric_count // 100 + 1)

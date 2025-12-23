@@ -96,8 +96,18 @@ def add_chess_tokens(
     if add_think_tags:
         special = ["<think>", "</think>", *special]
 
+    # Many chat models (e.g. Qwen) already define their own additional special
+    # tokens (chat separators, vision tokens, etc.). Passing a fresh list would
+    # overwrite them and can break the chat template. Always append to the
+    # existing list instead.
+    existing_additional: List[str] = list(getattr(tokenizer, "additional_special_tokens", []) or [])
+    desired_additional: List[str] = list(existing_additional)
+    for token in special:
+        if token not in desired_additional:
+            desired_additional.append(token)
+
     added["special_tokens"] = int(
-        tokenizer.add_special_tokens({"additional_special_tokens": special})
+        tokenizer.add_special_tokens({"additional_special_tokens": desired_additional})
     )
 
     if mode == "tags_and_moves":

@@ -85,6 +85,10 @@ class TestChessUtils(unittest.TestCase):
     def test_extract_uci_from_response_missing(self) -> None:
         self.assertIsNone(extract_uci_from_response("I think the best move is e4."))
 
+    def test_extract_uci_from_response_bare_uci_fallback(self) -> None:
+        response = "Main line: e2e4 e7e5. The pick is e2e4."
+        self.assertEqual(extract_uci_from_response(response), "e2e4")
+
     def test_position_from_board(self) -> None:
         board = self.starting_board.copy()
         board.push_san("e4")
@@ -244,4 +248,3 @@ class TestLossWeighting(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
