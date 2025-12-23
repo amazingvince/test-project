@@ -135,7 +135,6 @@ formatting:
 reasoning_trace:
   enabled: true
   always_choose_best_move: true
-  rerandomize_in_collator: false
   max_trace_tokens: 1024
   move_notation: "uci"
 
@@ -143,6 +142,10 @@ reasoning_trace:
   min_candidates: 3
   max_candidates: 5
   candidate_order: "shuffled"
+  # Pick candidates from a larger top-K pool for more variety.
+  candidate_pool_size: 12
+  candidate_pool_sampling: "softmax"
+  candidate_pool_temperature: 0.25
 
   # Content toggles (match distill H100 defaults)
   include_opening: true
@@ -168,11 +171,11 @@ reasoning_trace:
   perpetual_max_plies: 6
   max_motifs_per_candidate: 1
   include_candidate_pv: true
-  candidate_pv_prob: 0.6
+  candidate_pv_prob: 0.4
   candidate_pv_max_len: 4
   candidate_question_prob: 0.35
   include_static_eval_notes: true
-  static_eval_prob: 0.4
+  static_eval_prob: 0.25
   max_static_eval_notes: 2
   static_eval_include_material: true
   static_eval_include_pawn_structure: true
@@ -186,24 +189,62 @@ reasoning_trace:
   pv_prune_quiet_plies: 2
   pv_prune_min_moves: 2
   pv_quiet_summary: true
-  trap_detection_enabled: true
-  trap_shallow_depth: 4
-  trap_confirm_depth: 14
-  trap_candidate_limit: 5
+  include_trap_detection: true
+  trap_min_cp_swing: 80
   trap_min_win_prob_swing: 0.12
+  trap_shallow_good_cp: 30
+  trap_shallow_bad_cp: 120
   trap_shallow_good_win_prob: 0.06
   trap_shallow_bad_win_prob: 0.18
-  trap_confirm_top_k: 2
+  trap_confirm_cp_tolerance: 30
   trap_confirm_win_prob_tolerance: 0.05
-  phrase_variation_enabled: true
+  trap_refutation_max_len: 4
+
+  opening_paths:
+    - "./data/openings/a.tsv"
+    - "./data/openings/b.tsv"
+    - "./data/openings/c.tsv"
+    - "./data/openings/d.tsv"
+    - "./data/openings/e.tsv"
+
+  tablebase_paths:
+    - "./data/syzygy"
+
   orientation_starter_prob: 0.25
   reconsideration_prob: 0.4
   dead_end_prob: 0.4
   comparison_prob: 0.5
   style_weights:
     thorough: 0.40
-    concise: 0.25
-    tactical: 0.15
+    concise: 0.15
+    tactical: 0.10
+    quick: 0.10
+    problem_focused: 0.10
+    intuition: 0.08
+    comparison_focused: 0.07
+
+  # Source-aware language tweaks (merged on top of the global config).
+  # Bias puzzles more tactical without forcing a single style.
+  source_overrides:
+    puzzle:
+      max_candidates: 5
+      style_weights:
+        tactical: 0.32
+        problem_focused: 0.22
+        quick: 0.14
+        intuition: 0.10
+        comparison_focused: 0.08
+        thorough: 0.08
+        concise: 0.06
+    game:
+      style_weights:
+        thorough: 0.42
+        concise: 0.18
+        comparison_focused: 0.12
+        intuition: 0.10
+        quick: 0.08
+        tactical: 0.06
+        problem_focused: 0.04
 
 evaluation:
   # Used by the training-time chess eval callback (ACPL).
@@ -214,4 +255,3 @@ evaluation:
 output:
   push_to_hub: false
   hub_model_id: null
-

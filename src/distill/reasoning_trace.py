@@ -1141,7 +1141,68 @@ class ReasoningTraceGenerator:
         max_c = max(min_c, int(cfg.get("max_candidates", 5)))
         max_c = min(max_c, len(analysis.move_analyses))
         count = rng.randint(min_c, max_c) if max_c > min_c else max_c
-        return analysis.move_analyses[:count]
+
+        pool_size = cfg.get("candidate_pool_size")
+        pool_cap = max_c
+        if pool_size is not None:
+            try:
+                pool_cap = int(pool_size)
+            except (TypeError, ValueError):
+                pool_cap = max_c
+        pool_cap = max(count, min(pool_cap, len(analysis.move_analyses)))
+        pool = list(analysis.move_analyses[:pool_cap])
+
+        sampling = str(cfg.get("candidate_pool_sampling", "top")).lower()
+        if sampling == "top" or pool_cap <= count:
+            return pool[:count]
+        if sampling == "uniform":
+            return rng.sample(pool, count)
+        if sampling == "softmax":
+            temperature = float(cfg.get("candidate_pool_temperature", 1.0))
+            temperature = max(1e-6, temperature)
+            weights = []
+            for cand in pool:
+                wp = getattr(cand, "win_probability", None)
+                if wp is None:
+                    weights.append(1.0)
+                else:
+                    weights.append(math.exp(float(wp) / temperature))
+            return self._weighted_sample_without_replacement(pool, weights, count, rng)
+
+        return rng.sample(pool, count)
+
+    @staticmethod
+    def _weighted_sample_without_replacement(
+        items: List[Any],
+        weights: List[float],
+        k: int,
+        rng: random.Random,
+    ) -> List[Any]:
+        """Sample k unique items, roughly proportional to weights."""
+        if k <= 0:
+            return []
+        chosen = []
+        remaining_items = list(items)
+        remaining_weights = [max(0.0, float(w)) for w in weights]
+        k = min(k, len(remaining_items))
+
+        for _ in range(k):
+            total = sum(remaining_weights)
+            if total <= 0:
+                idx = rng.randrange(len(remaining_items))
+            else:
+                pick = rng.random() * total
+                running = 0.0
+                idx = 0
+                for i, w in enumerate(remaining_weights):
+                    running += w
+                    if pick <= running:
+                        idx = i
+                        break
+            chosen.append(remaining_items.pop(idx))
+            remaining_weights.pop(idx)
+
+        return chosen
 
     def _orientation_line(
         self,

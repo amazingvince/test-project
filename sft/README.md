@@ -24,3 +24,12 @@ This repo supports two common SFT targets:
 **Tokenizer**
 - `tokenizer.chess_mode: tags_only` adds only `<uci_move>` and `</uci_move>` (recommended for SFT).
 - `tokenizer.chess_mode: tags_and_moves` additionally adds all 8,064 UCI move strings as tokens (mostly useful for distillation).
+
+**Openings + tablebases (optional)**
+If `reasoning_trace.enabled: true`:
+- `reasoning_trace.include_opening: true` enriches traces with opening names when `./data/openings/*.tsv` is present.
+  - Download: `python scripts/download_openings.py --output-dir ./data/openings`
+- `reasoning_trace.include_tablebase: true` enriches traces with Syzygy endgame info when `./data/syzygy` is present.
+  - Download: `python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5`
+
+These resources only affect the *trace text*; the SFT target move still comes from the dataset (played/best).

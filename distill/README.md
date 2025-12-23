@@ -22,3 +22,10 @@ Stage 2 refines the move policy by distilling a Stockfish teacher distribution o
 
 **Related docs**
 - `docs/chess_reasoning_trace_generator.md`: reasoning trace design and configuration knobs.
+
+**Openings + tablebases (optional)**
+If `reasoning_trace.enabled: true`:
+- `reasoning_trace.include_opening: true` enriches traces with opening names when `./data/openings/*.tsv` is present.
+  - Download: `python scripts/download_openings.py --output-dir ./data/openings`
+- `reasoning_trace.include_tablebase: true` enriches traces with Syzygy endgame info when `./data/syzygy` is present.
+  - Download: `python scripts/download_tablebases.py --output-dir ./data/syzygy --pieces 3,4,5`

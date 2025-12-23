@@ -79,13 +79,34 @@ Notes:
 
 ## 5) Stage 1: SFT (Supervised Fine-Tuning)
 
-Streaming from HF (no local dataset):
+### Option A: Fast SFT (streaming, no Stockfish)
+
+Streaming from HF (no local dataset, no Stockfish reasoning traces):
 
 ```bash
 python sft/train.py --config configs/sft/config_sft.yaml --streaming
 ```
 
-Or train from a local preprocessed dataset:
+### Option B: SFT with distill-style reasoning traces (recommended)
+
+If you want the *same* reasoning-trace format used in distillation (and a “best move” target),
+preprocess with Stockfish first:
+
+```bash
+python sft/preprocess.py --config configs/sft/config_with_eval.yaml --output ./data/chess_sft_best
+python sft/train.py --config configs/sft/config_with_eval.yaml --preprocessed_path ./data/chess_sft_best
+```
+
+H100 preset (no 8k move tokens; distill-style traces + best move):
+
+```bash
+python sft/preprocess.py --config configs/sft/config_sft_h100_no_moves.yaml --output ./data/chess_sft_h100_best
+python sft/train.py --config configs/sft/config_sft_h100_no_moves.yaml --preprocessed_path ./data/chess_sft_h100_best
+```
+
+### Option C: SFT from a local dataset (no Stockfish)
+
+Train from a local preprocessed dataset (no Stockfish evals / no reasoning traces):
 
 ```bash
 python sft/train.py --config configs/sft/config_sft.yaml --preprocessed_path ./data/chess_sft

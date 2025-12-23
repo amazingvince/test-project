@@ -22,6 +22,10 @@ Stockfish is optional but strongly recommended for distillation and richer eval:
 # Streaming from Hugging Face (no local dataset)
 python sft/train.py --config configs/sft/config_sft.yaml --streaming
 
+# SFT with distill-style reasoning traces + Stockfish best-move targets
+python sft/preprocess.py --config configs/sft/config_with_eval.yaml --output ./data/chess_sft_best
+python sft/train.py --config configs/sft/config_with_eval.yaml --preprocessed_path ./data/chess_sft_best
+
 # Or train from a preprocessed dataset
 python sft/train.py --config configs/sft/config_sft.yaml --preprocessed_path ./data/chess_sft
 ```

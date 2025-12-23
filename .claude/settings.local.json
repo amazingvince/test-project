@@ -5,7 +5,8 @@
       "WebFetch(domain:github.com)",
       "Bash(find:*)",
       "Bash(python formatting_distill.py:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "WebFetch(domain:arxiv.org)"
     ]
   }
 }

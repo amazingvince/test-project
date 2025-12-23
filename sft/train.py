@@ -543,13 +543,13 @@ def load_or_create_dataset(
     training_config = config.get('training', {})
     eval_size = training_config.get('eval_size', 1000)
     elo_weights = config.get('elo_weights', None)
+    reasoning_cfg = config.get("reasoning_trace", {})
     
     if preprocessed_path and Path(preprocessed_path).exists():
         print(f"Loading preprocessed dataset from {preprocessed_path}")
         dataset = load_from_disk(preprocessed_path)
         
         if 'messages' not in dataset.column_names:
-            reasoning_cfg = config.get("reasoning_trace", {})
             formatting_cfg = config.get("formatting", {})
 
             if reasoning_cfg.get("enabled") and "move_evaluations" in dataset.column_names:
@@ -569,6 +569,23 @@ def load_or_create_dataset(
                 )
 
                 trace_generator = ReasoningTraceGenerator(reasoning_cfg, tokenizer=tokenizer)
+                trace_status = trace_generator.status()
+                opening_detail = ""
+                if not trace_status.get("opening_available"):
+                    opening_detail = trace_status.get("opening_error") or "unavailable"
+                tablebase_detail = ""
+                if not trace_status.get("tablebase_available"):
+                    tablebase_detail = trace_status.get("tablebase_error") or "unavailable"
+                print(
+                    "Reasoning trace enabled: "
+                    f"opening={trace_status.get('opening_available')}"
+                    + (f" ({opening_detail})" if opening_detail else "")
+                    + ", "
+                    f"tablebase={trace_status.get('tablebase_available')}"
+                    + (f" ({tablebase_detail})" if tablebase_detail else "")
+                    + ", "
+                    f"force_best={always_choose_best}"
+                )
                 if data_config.get("target_move") == "best" and "best_move_uci" in dataset.column_names:
                     dataset = dataset.map(maybe_override_target_to_best, desc="Setting target_move_uci=best_move_uci")
 
@@ -611,6 +628,13 @@ def load_or_create_dataset(
         return dataset, None
     
     if streaming:
+        if reasoning_cfg.get("enabled"):
+            print(
+                "Note: reasoning_trace.enabled is set, but streaming SFT does not run Stockfish and "
+                "cannot generate distill-style reasoning traces. Use `sft/preprocess.py` with a "
+                "Stockfish-enabled config (e.g. `configs/sft/config_with_eval.yaml`) and train from "
+                "`--preprocessed_path` instead."
+            )
         print("Creating streaming dataset...")
         train_dataset = create_streaming_dataset(
             games_ratio=data_config.get('games_ratio', 0.7),
