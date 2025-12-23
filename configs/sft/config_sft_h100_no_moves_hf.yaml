@@ -1,0 +1,227 @@
+# Chess LLM SFT (H100, distill-style traces, vanilla HF loss)
+# ===========================================================
+#
+# This config is the "no 8k move tokens" + "Stockfish reasoning trace" setup,
+# but trained with the *standard* Hugging Face Trainer loss (no weighting, no CCE).
+#
+# Workflow:
+#   1) Preprocess (writes `messages` with Stockfish reasoning traces):
+#      python sft/preprocess.py --config configs/sft/config_sft_h100_no_moves_hf.yaml --output ./data/chess_sft_h100_best
+#   2) Train (vanilla CE via model.forward(labels=...)):
+#      python sft/train_hf.py --config configs/sft/config_sft_h100_no_moves_hf.yaml --preprocessed_path ./data/chess_sft_h100_best
+
+model:
+  name: "Qwen/Qwen3-0.6B"
+  max_seq_length: 2048
+  dtype: "bfloat16"
+  attn_implementation: "flash_attention_2"
+
+tokenizer:
+  chess_mode: "tags_only"
+  add_think_tags: true
+
+training:
+  output_dir: "./outputs/chess-sft-h100-no-moves-hf"
+
+  per_device_train_batch_size: 24
+  per_device_eval_batch_size: 24
+  gradient_accumulation_steps: 3
+
+  num_train_epochs: 1
+  max_steps: -1
+
+  learning_rate: 2.0e-5
+  lr_scheduler_type: "cosine"
+  warmup_ratio: 0.1
+
+  optim: "adamw_torch_fused"
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  torch_compile: false
+  gradient_checkpointing: true
+
+  logging_steps: 10
+  report_to: "wandb"
+  run_name: "chess-sft-h100-no-moves-hf"
+
+  save_strategy: "steps"
+  save_steps: 500
+  save_total_limit: 3
+
+  eval_strategy: "steps"
+  eval_steps: 500
+  eval_size: 200
+
+  chess_eval_positions: 150
+  chess_eval_batch_size: 32
+  chess_eval_steps: 500
+
+  chess_eval_max_new_tokens: 1024
+  chess_eval_max_total_tokens: 2048
+  chess_eval_do_sample: true
+  chess_eval_temperature: 0.6
+  chess_eval_top_p: 0.95
+  chess_eval_top_k: 20
+  chess_eval_min_p: 0.0
+  chess_eval_print_samples: 3
+  chess_eval_print_max_chars: 5000
+
+  bf16: true
+
+data:
+  games_dataset: "Lichess/standard-chess-games"
+  puzzles_dataset: "Lichess/chess-puzzles"
+
+  target_size: 1000000
+  games_ratio: 0.7
+
+  min_elo: 1200
+  sample_rate: 0.3
+  skip_first_moves: 4
+  skip_last_moves: 2
+
+  min_puzzle_rating: 1000
+  max_puzzle_rating: 2500
+
+  shuffle_buffer_size: 10000
+  eval_split_ratio: 0.02
+
+  target_move: "best"
+
+stockfish:
+  path: "/usr/bin/stockfish"
+  depth: 12
+  workers: 24
+  multipv: null
+  hash_mb: 64
+
+# Preprocessing still computes `loss_weight`, but training ignores it.
+loss_weighting:
+  enabled: false
+  weight_type: "uniform"
+
+distillation:
+  min_probability: 0.001
+  stockfish_temperature: 100.0
+
+formatting:
+  include_board: false
+
+reasoning_trace:
+  enabled: true
+  always_choose_best_move: true
+  max_trace_tokens: 1024
+  move_notation: "uci"
+
+  min_candidates: 3
+  max_candidates: 5
+  candidate_order: "shuffled"
+  candidate_pool_size: 12
+  candidate_pool_sampling: "softmax"
+  candidate_pool_temperature: 0.25
+
+  include_opening: true
+  include_tablebase: true
+  include_orientation: true
+  include_assessment: true
+  include_comparison: true
+  include_reconsideration: true
+  include_dead_end: true
+  include_pv: true
+  max_pv_length: 8
+  include_threat_scan: true
+  threat_max_checks: 2
+  threat_max_hanging: 2
+  threat_scan_include_empty: false
+  include_plan: true
+  plan_prob: 0.5
+  include_opponent_perspective: true
+  opponent_perspective_prob: 0.4
+  unclear_win_margin: 0.04
+  include_motifs: true
+  include_quiet_move_motif: true
+  perpetual_max_plies: 6
+  max_motifs_per_candidate: 1
+  include_candidate_pv: true
+  candidate_pv_prob: 0.4
+  candidate_pv_max_len: 4
+  candidate_question_prob: 0.35
+  include_static_eval_notes: true
+  static_eval_prob: 0.25
+  max_static_eval_notes: 2
+  static_eval_include_material: true
+  static_eval_include_pawn_structure: true
+  static_eval_include_king_safety: true
+  static_eval_include_development: true
+  static_eval_include_mobility: true
+  mobility_note_threshold: 8
+  include_positional_cues: true
+  max_positional_cues: 4
+  pv_prune_quiet: true
+  pv_prune_quiet_plies: 2
+  pv_prune_min_moves: 2
+  pv_quiet_summary: true
+  include_trap_detection: true
+  trap_min_cp_swing: 80
+  trap_min_win_prob_swing: 0.12
+  trap_shallow_good_cp: 30
+  trap_shallow_bad_cp: 120
+  trap_shallow_good_win_prob: 0.06
+  trap_shallow_bad_win_prob: 0.18
+  trap_confirm_cp_tolerance: 30
+  trap_confirm_win_prob_tolerance: 0.05
+  trap_refutation_max_len: 4
+
+  opening_paths:
+    - "./data/openings/a.tsv"
+    - "./data/openings/b.tsv"
+    - "./data/openings/c.tsv"
+    - "./data/openings/d.tsv"
+    - "./data/openings/e.tsv"
+
+  tablebase_paths:
+    - "./data/syzygy"
+
+  orientation_starter_prob: 0.25
+  reconsideration_prob: 0.4
+  dead_end_prob: 0.4
+  comparison_prob: 0.5
+  style_weights:
+    thorough: 0.40
+    concise: 0.15
+    tactical: 0.10
+    quick: 0.10
+    problem_focused: 0.10
+    intuition: 0.08
+    comparison_focused: 0.07
+
+  source_overrides:
+    puzzle:
+      max_candidates: 5
+      style_weights:
+        tactical: 0.32
+        problem_focused: 0.22
+        quick: 0.14
+        intuition: 0.10
+        comparison_focused: 0.08
+        thorough: 0.08
+        concise: 0.06
+    game:
+      style_weights:
+        thorough: 0.42
+        concise: 0.18
+        comparison_focused: 0.12
+        intuition: 0.10
+        quick: 0.08
+        tactical: 0.06
+        problem_focused: 0.04
+
+evaluation:
+  stockfish_path: "/usr/bin/stockfish"
+  stockfish_depth: 20
+  stockfish_workers: 24
+
+output:
+  push_to_hub: false
+

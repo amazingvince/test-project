@@ -38,51 +38,11 @@ from transformers import AutoTokenizer
 
 from src.distill.reasoning_trace import ReasoningTraceGenerator
 from src.distill.stockfish_teacher import MoveAnalysis, PositionAnalysis
+from src.utils.chess_tokenizer import ChessTokenizerMode, add_chess_tokens, generate_all_uci_moves
 from src.utils.chess_utils import render_board_utf
 
 
 THINK_RE = re.compile(r"<think>\s*(.*?)\s*</think>", flags=re.DOTALL | re.IGNORECASE)
-
-
-def generate_all_uci_moves() -> List[str]:
-    """Generate all UCI move strings, including promotions on back ranks."""
-    moves = []
-    for from_sq in range(64):
-        for to_sq in range(64):
-            if from_sq == to_sq:
-                continue
-            from_str = chess.SQUARE_NAMES[from_sq]
-            to_str = chess.SQUARE_NAMES[to_sq]
-            uci_move = f"{from_str}{to_str}"
-            moves.append(uci_move)
-
-            to_rank = chess.square_rank(to_sq)
-            if to_rank in (0, 7):
-                for promo in ['q', 'r', 'b', 'n']:
-                    moves.append(f"{uci_move}{promo}")
-
-    return moves
-
-
-def add_distillation_tokens(
-    tokenizer,
-    add_move_tokens: bool = True,
-    all_uci_moves: Optional[List[str]] = None,
-) -> Dict[str, int]:
-    """Add distillation tags and optional UCI move tokens to tokenizer."""
-    added = {'special_tokens': 0, 'move_tokens': 0}
-
-    special_tokens = {
-        "additional_special_tokens": ["<think>", "</think>", "<uci_move>", "</uci_move>"]
-    }
-    added['special_tokens'] = tokenizer.add_special_tokens(special_tokens)
-
-    if add_move_tokens:
-        if all_uci_moves is None:
-            all_uci_moves = generate_all_uci_moves()
-        added['move_tokens'] = tokenizer.add_tokens(all_uci_moves, special_tokens=False)
-
-    return added
 
 
 def setup_tokenizer(config: Dict[str, Any]) -> Any:
@@ -96,15 +56,24 @@ def setup_tokenizer(config: Dict[str, Any]) -> Any:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Add distillation tokens
-    distill_config = config.get('distillation', {})
-    all_uci_moves = generate_all_uci_moves()
-    added = add_distillation_tokens(
+    tokenizer_config = config.get("tokenizer", {})
+    distill_config = config.get("distillation", {})
+
+    mode_str = tokenizer_config.get("chess_mode")
+    if mode_str is None:
+        mode_str = "tags_and_moves" if distill_config.get("add_uci_move_tokens", True) else "tags_only"
+    if mode_str not in ("tags_only", "tags_and_moves"):
+        raise ValueError(f"tokenizer.chess_mode must be 'tags_only' or 'tags_and_moves' (got {mode_str!r})")
+    mode: ChessTokenizerMode = "tags_only" if mode_str == "tags_only" else "tags_and_moves"
+
+    all_uci_moves = generate_all_uci_moves() if mode == "tags_and_moves" else None
+    added = add_chess_tokens(
         tokenizer=tokenizer,
-        add_move_tokens=distill_config.get('add_uci_move_tokens', True),
+        mode=mode,
+        add_think_tags=bool(tokenizer_config.get("add_think_tags", False)),
         all_uci_moves=all_uci_moves,
     )
-    print(f"Added tokens: {added['special_tokens']} special, {added['move_tokens']} UCI move tokens")
+    print(f"Added tokens: {added['special_tokens']} special, {added['move_tokens']} UCI move tokens (mode={mode})")
     print(f"Tokenizer vocab size: {len(tokenizer)}")
 
     return tokenizer

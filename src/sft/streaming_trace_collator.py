@@ -9,7 +9,6 @@ tokenizes with prompt masking so the loss is computed only on assistant tokens.
 from __future__ import annotations
 
 import random
-import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Sequence
 
@@ -96,6 +95,7 @@ class StreamingSFTStockfishTraceCollator:
     max_length: int = 2048
     pad_to_multiple_of: int = 8
 
+    include_loss_weights: bool = True
     include_board: bool = False
     max_display_moves: int = 5
     randomize_order: bool = True
@@ -114,11 +114,7 @@ class StreamingSFTStockfishTraceCollator:
         batch_rng = random.Random(self.seed + self._call_count)
 
         fens = [ex["fen"] for ex in examples]
-        try:
-            analyses = self.teacher.analyze_batch(fens)
-        except Exception as exc:
-            warnings.warn(f"Stockfish analysis failed: {exc}. Falling back to minimal messages.")
-            analyses = [None] * len(examples)
+        analyses = self.teacher.analyze_batch(fens)
 
         batch_input_ids: List[List[int]] = []
         batch_attention_mask: List[List[int]] = []
@@ -172,10 +168,17 @@ class StreamingSFTStockfishTraceCollator:
 
             if len(input_ids) > self.max_length:
                 overflow = len(input_ids) - self.max_length
+                if overflow > prompt_length:
+                    raise ValueError(
+                        "Example exceeds max_length and would truncate assistant tokens. "
+                        f"max_length={self.max_length} full_length={len(input_ids)} "
+                        f"prompt_length={prompt_length}. "
+                        "Reduce reasoning_trace.max_trace_tokens or increase model.max_seq_length."
+                    )
                 input_ids = input_ids[overflow:]
                 attention_mask = attention_mask[overflow:]
                 labels = input_ids.copy()
-                prompt_length = max(0, prompt_length - overflow)
+                prompt_length -= overflow
 
             for i in range(min(prompt_length, len(labels))):
                 labels[i] = -100
@@ -183,7 +186,8 @@ class StreamingSFTStockfishTraceCollator:
             batch_input_ids.append(input_ids)
             batch_attention_mask.append(attention_mask)
             batch_labels.append(labels)
-            batch_weights.append(float(ex.get("loss_weight", 1.0)))
+            if self.include_loss_weights:
+                batch_weights.append(float(ex.get("loss_weight", 1.0)))
 
         max_len = max(len(ids) for ids in batch_input_ids)
         if self.pad_to_multiple_of:
@@ -199,9 +203,11 @@ class StreamingSFTStockfishTraceCollator:
             padded_attention.append(attn + [0] * pad_len)
             padded_labels.append(lab + [-100] * pad_len)
 
-        return {
+        batch: Dict[str, torch.Tensor] = {
             "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
             "attention_mask": torch.tensor(padded_attention, dtype=torch.long),
             "labels": torch.tensor(padded_labels, dtype=torch.long),
-            "loss_weights": torch.tensor(batch_weights, dtype=torch.float32),
         }
+        if self.include_loss_weights:
+            batch["loss_weights"] = torch.tensor(batch_weights, dtype=torch.float32)
+        return batch

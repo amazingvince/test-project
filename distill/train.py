@@ -232,10 +232,19 @@ class DistillationTrainer(Trainer):
             'top1_agreement': 0.0,
             'kl_divergence': 0.0,
             'move_pos_found': 0.0,
+            'kl_applied_frac': 0.0,
             'mapped_prob': 0.0,
             'mapped_move_frac': 0.0,
         }
         self._metric_count = 0
+
+        # Hugging Face Trainer will skip dividing the loss by `gradient_accumulation_steps`
+        # when it believes the loss is already normalized via `num_items_in_batch`.
+        #
+        # This trainer combines a token-averaged CE loss with a per-microbatch KL loss,
+        # so we keep the standard Trainer scaling behavior and compute losses as
+        # per-microbatch means.
+        self.model_accepts_loss_kwargs = False
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
@@ -267,34 +276,23 @@ class DistillationTrainer(Trainer):
         if self.ce_loss_enabled and labels is not None:
             if self.use_cce:
                 # Use Cut Cross Entropy for memory efficiency
-                ce_loss = self._compute_cce_loss(model, outputs, labels, num_items_in_batch)
+                ce_loss = self._compute_cce_loss(model, outputs, labels, num_items_in_batch=None)
             else:
                 # Standard PyTorch cross entropy with proper gradient accumulation handling
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels[..., 1:].contiguous()
-
-                if num_items_in_batch is not None:
-                    # Use sum reduction and divide by total valid tokens across accumulated batches
-                    ce_loss = F.cross_entropy(
-                        shift_logits.view(-1, vocab_size),
-                        shift_labels.view(-1),
-                        ignore_index=-100,
-                        reduction="sum",
-                    )
-                    ce_loss = ce_loss / num_items_in_batch
-                else:
-                    # Fallback to mean reduction (single batch or no accumulation info)
-                    ce_loss = F.cross_entropy(
-                        shift_logits.view(-1, vocab_size),
-                        shift_labels.view(-1),
-                        ignore_index=-100,
-                    )
+                ce_loss = F.cross_entropy(
+                    shift_logits.view(-1, vocab_size),
+                    shift_labels.view(-1),
+                    ignore_index=-100,
+                )
 
         # STEP 2: If no distillation, return CE loss only
         if self.distill_loss_fn is None or soft_targets is None:
             return (ce_loss, outputs) if return_outputs else ce_loss
 
         # STEP 3: Compute KL loss on move position
+        kl_applied_ratio = None
         if self.move_distill_mode == "move_prefix":
             tokenizer = getattr(self, "processing_class", None)
             if tokenizer is None:
@@ -417,6 +415,7 @@ class DistillationTrainer(Trainer):
             hard_targets_batch = []
             mapped_prob_ratios = []
             mapped_move_fracs = []
+            distillable_batch = []
 
             for i, soft_target in enumerate(soft_targets):
                 if soft_target is None:
@@ -424,6 +423,7 @@ class DistillationTrainer(Trainer):
                     teacher_probs = torch.ones(vocab_size, device=device) / vocab_size
                     mapped_prob_ratios.append(0.0)
                     mapped_move_fracs.append(0.0)
+                    distillable_batch.append(False)
                 else:
                     total_prob = sum(soft_target.values())
                     mapped_prob = sum(
@@ -440,6 +440,7 @@ class DistillationTrainer(Trainer):
                     mapped_move_fracs.append(
                         (mapped_count / len(soft_target)) if soft_target else 0.0
                     )
+                    distillable_batch.append(mapped_count > 0)
                     # Convert move_probs dict to tensor
                     teacher_probs = create_soft_target_tensor(
                         move_probs=soft_target,
@@ -461,26 +462,31 @@ class DistillationTrainer(Trainer):
 
             teacher_probs_tensor = torch.stack(teacher_probs_batch)  # (batch, vocab)
             hard_targets_tensor = torch.tensor(hard_targets_batch, device=device)
+            distillable_mask = torch.tensor(distillable_batch, device=device, dtype=torch.bool)
 
             # Get student logits at move position
             # For causal LM, logits at position t predict token t+1.
             # We want logits at the <uci_move> tag position to predict the move token.
             move_pos_found_ratio = None
+            kl_applied_ratio = None
             if move_positions is not None:
                 move_positions = move_positions.to(device)
                 valid_mask = (move_positions >= 0) & (move_positions < seq_len)
                 move_pos_found_ratio = valid_mask.float().mean().item()
-                if valid_mask.any():
+                keep_mask = valid_mask & distillable_mask
+                kl_applied_ratio = keep_mask.float().mean().item()
+
+                if keep_mask.any():
                     if batch_size == 1 and move_positions.numel() != batch_size:
                         # Packed batch: a single flattened sequence that contains multiple
                         # original samples. All move positions belong to batch item 0.
-                        student_logits = logits[0, move_positions[valid_mask]]
+                        student_logits = logits[0, move_positions[keep_mask]]
                     else:
                         # Standard batch: one move position per batch item.
-                        batch_indices = torch.arange(batch_size, device=device)[valid_mask]
-                        student_logits = logits[batch_indices, move_positions[valid_mask]]
-                    teacher_probs_tensor = teacher_probs_tensor[valid_mask]
-                    hard_targets_tensor = hard_targets_tensor[valid_mask]
+                        batch_indices = torch.arange(batch_size, device=device)[keep_mask]
+                        student_logits = logits[batch_indices, move_positions[keep_mask]]
+                    teacher_probs_tensor = teacher_probs_tensor[keep_mask]
+                    hard_targets_tensor = hard_targets_tensor[keep_mask]
                 else:
                     student_logits = None
             else:
@@ -492,6 +498,14 @@ class DistillationTrainer(Trainer):
                     student_logits = logits[batch_indices, seq_lengths]  # (batch, vocab)
                 else:
                     student_logits = logits[:, -2, :]  # (batch, vocab)
+                keep_mask = distillable_mask
+                kl_applied_ratio = keep_mask.float().mean().item()
+                if keep_mask.any():
+                    student_logits = student_logits[keep_mask]
+                    teacher_probs_tensor = teacher_probs_tensor[keep_mask]
+                    hard_targets_tensor = hard_targets_tensor[keep_mask]
+                else:
+                    student_logits = None
 
             # Compute distillation loss (KL on move position)
             if student_logits is None:
@@ -524,6 +538,8 @@ class DistillationTrainer(Trainer):
         self._accumulated_metrics['hard_loss'] += loss_dict.get('hard_loss', 0)
         if move_pos_found_ratio is not None:
             self._accumulated_metrics['move_pos_found'] += move_pos_found_ratio
+        if kl_applied_ratio is not None:
+            self._accumulated_metrics['kl_applied_frac'] += kl_applied_ratio
         if mapped_prob_ratios:
             self._accumulated_metrics['mapped_prob'] += sum(mapped_prob_ratios) / len(mapped_prob_ratios)
         if mapped_move_fracs:
@@ -549,6 +565,7 @@ class DistillationTrainer(Trainer):
             logs['distill/hard_loss'] = self._accumulated_metrics['hard_loss'] / self._metric_count
             logs['distill/move_pos_found'] = self._accumulated_metrics['move_pos_found'] / self._metric_count
             if self.move_distill_mode == "move_token":
+                logs['distill/kl_applied_frac'] = self._accumulated_metrics['kl_applied_frac'] / self._metric_count
                 logs['distill/mapped_prob'] = self._accumulated_metrics['mapped_prob'] / self._metric_count
                 logs['distill/mapped_move_frac'] = self._accumulated_metrics['mapped_move_frac'] / self._metric_count
 

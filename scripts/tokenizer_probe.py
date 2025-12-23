@@ -32,41 +32,16 @@ sys.path.insert(0, str(ROOT))
 
 from src.distill.formatting_distill import (
     DISTILLATION_PROMPT_TEMPLATE,
+    DISTILLATION_PROMPT_TEMPLATE_NO_BOARD,
     DISTILLATION_RESPONSE_TEMPLATE,
 )
+from src.utils.chess_tokenizer import ChessTokenizerMode, add_chess_tokens, generate_all_uci_moves
+from src.utils.chess_utils import get_first_legal_move, get_legal_moves_uci, render_board_utf
 
 
 def load_config(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def generate_all_uci_moves() -> List[str]:
-    moves = []
-    for from_sq in range(64):
-        for to_sq in range(64):
-            if from_sq == to_sq:
-                continue
-            from_str = chess.SQUARE_NAMES[from_sq]
-            to_str = chess.SQUARE_NAMES[to_sq]
-            uci_move = f"{from_str}{to_str}"
-            moves.append(uci_move)
-
-            to_rank = chess.square_rank(to_sq)
-            if to_rank in (0, 7):
-                for promo in ["q", "r", "b", "n"]:
-                    moves.append(f"{uci_move}{promo}")
-    return moves
-
-
-def add_distillation_tokens(tokenizer, add_move_tokens: bool, all_uci_moves: List[str]) -> Dict[str, int]:
-    added = {"special_tokens": 0, "move_tokens": 0}
-    added["special_tokens"] = tokenizer.add_special_tokens(
-        {"additional_special_tokens": ["<think>", "</think>", "<uci_move>", "</uci_move>"]}
-    )
-    if add_move_tokens:
-        added["move_tokens"] = tokenizer.add_tokens(all_uci_moves, special_tokens=False)
-    return added
 
 
 def count_single_token_moves(tokenizer, all_uci_moves: List[str]) -> int:
@@ -108,10 +83,20 @@ def summarize_moves(legal_moves_uci: str, max_show: int = 10) -> str:
 
 
 def analyze_sample(tokenizer, pos: Dict[str, Any]) -> None:
-    user_content = DISTILLATION_PROMPT_TEMPLATE.format(
-        fen=pos["fen"],
-        legal_moves=pos["legal_moves_uci"],
-        board=pos.get("board_utf", ""),
+    fen = pos["fen"]
+    board = chess.Board(fen)
+    legal_moves = pos.get("legal_moves_uci") or get_legal_moves_uci(board)
+    example_move = pos.get("first_legal_move") or get_first_legal_move(board) or ""
+    side_to_move = pos.get("side_to_move") or ("White" if board.turn == chess.WHITE else "Black")
+    board_utf = pos.get("board_utf") or render_board_utf(board)
+
+    prompt_template = DISTILLATION_PROMPT_TEMPLATE if board_utf else DISTILLATION_PROMPT_TEMPLATE_NO_BOARD
+    user_content = prompt_template.format(
+        fen=fen,
+        side_to_move=side_to_move,
+        legal_moves=legal_moves,
+        example_move=example_move,
+        board=board_utf,
     )
     assistant_content = DISTILLATION_RESPONSE_TEMPLATE.format(
         thinking=f"Selecting move {pos['target_move_uci']}.",
@@ -208,18 +193,26 @@ def main() -> int:
     config = load_config(args.config)
     model_name = config.get("model", {}).get("name", "Qwen/Qwen3-0.6B")
     distill_config = config.get("distillation", {})
+    tokenizer_config = config.get("tokenizer", {})
 
     print(f"Loading tokenizer: {model_name}")
     base_tok = AutoTokenizer.from_pretrained(model_name)
     tok = AutoTokenizer.from_pretrained(model_name)
 
+    mode_str = tokenizer_config.get("chess_mode")
+    if mode_str is None:
+        mode_str = "tags_and_moves" if distill_config.get("add_uci_move_tokens", True) else "tags_only"
+    if mode_str not in ("tags_only", "tags_and_moves"):
+        raise ValueError(f"tokenizer.chess_mode must be 'tags_only' or 'tags_and_moves' (got {mode_str!r})")
+    mode: ChessTokenizerMode = "tags_only" if mode_str == "tags_only" else "tags_and_moves"
     all_uci_moves = generate_all_uci_moves()
-    added = add_distillation_tokens(
-        tok,
-        add_move_tokens=distill_config.get("add_uci_move_tokens", True),
-        all_uci_moves=all_uci_moves,
+    added = add_chess_tokens(
+        tokenizer=tok,
+        mode=mode,
+        add_think_tags=bool(tokenizer_config.get("add_think_tags", False)),
+        all_uci_moves=all_uci_moves if mode == "tags_and_moves" else None,
     )
-    print(f"Added tokens: {added['special_tokens']} special, {added['move_tokens']} moves")
+    print(f"Added tokens: {added['special_tokens']} special, {added['move_tokens']} moves (mode={mode})")
 
     print_tokenizer_info(base_tok, tok, all_uci_moves)
 

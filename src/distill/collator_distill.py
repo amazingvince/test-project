@@ -186,14 +186,10 @@ class DistillationCollator:
                 else:
                     analysis_overrides.append(None)
 
-        try:
-            analyses = self.teacher.analyze_batch(
-                fens,
-                analysis_overrides=analysis_overrides,
-            )
-        except Exception as e:
-            warnings.warn(f"Stockfish analysis failed: {e}. Using fallback.")
-            analyses = [None] * len(examples)
+        analyses = self.teacher.analyze_batch(
+            fens,
+            analysis_overrides=analysis_overrides,
+        )
         
         # Process each example
         batch_messages = []

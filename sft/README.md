@@ -10,6 +10,7 @@ This repo supports two common SFT targets:
 
 **Entry points**
 - `sft/train.py`: SFT training (streaming or preprocessed dataset).
+- `sft/train_hf.py`: SFT training using vanilla HF loss (no weighting / CCE).
 - `sft/preprocess.py`: Optional offline dataset generation with Stockfish move evaluations (useful for analysis/ablations; distillation lives in `distill/`).
 
 **Typical commands**
@@ -17,10 +18,12 @@ This repo supports two common SFT targets:
 - Streaming SFT with Stockfish reasoning traces (slow): `python sft/train.py --config configs/sft/config_with_eval.yaml --streaming`
 - Preprocessed SFT: `python sft/train.py --config configs/sft/config_sft.yaml --preprocessed_path ./data/chess_sft`
 - Preprocess with Stockfish evals: `python sft/preprocess.py --config configs/sft/config_with_eval.yaml --output ./data/chess_with_eval`
+- Vanilla-loss SFT on preprocessed reasoning traces: `python sft/train_hf.py --config configs/sft/config_sft_h100_no_moves_hf.yaml --preprocessed_path ./data/chess_sft_h100_best`
 
 **Configuration**
 - `configs/sft/config_sft.yaml`: baseline SFT training.
 - `configs/sft/config_with_eval.yaml`: Stockfish-annotated datasets + reasoning traces (trains on best move by default).
+- `configs/sft/config_sft_h100_no_moves_hf.yaml`: distill-style traces + best move target, trained with standard HF CE loss.
 
 **Tokenizer**
 - `tokenizer.chess_mode: tags_only` adds only `<uci_move>` and `</uci_move>` (recommended for SFT).

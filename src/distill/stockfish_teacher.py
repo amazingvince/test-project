@@ -1001,7 +1001,7 @@ class StockfishTeacher:
         fens: List[str],
         top_k: Optional[int] = None,
         analysis_overrides: Optional[List[Optional[Dict[str, Any]]]] = None,
-    ) -> List[PositionAnalysis]:
+    ) -> List[Optional[PositionAnalysis]]:
         """
         Analyze multiple positions in parallel.
         
@@ -1011,7 +1011,8 @@ class StockfishTeacher:
             analysis_overrides: Optional per-position overrides
         
         Returns:
-            List of PositionAnalysis (same order as input)
+            List of `PositionAnalysis` (same order as input). If an individual
+            analysis fails, the corresponding entry is `None`.
         """
         if analysis_overrides is not None and len(analysis_overrides) != len(fens):
             raise ValueError("analysis_overrides must match length of fens")
@@ -1043,7 +1044,12 @@ class StockfishTeacher:
 
             futures.append(self._submit_analysis(fen, settings))
 
-        results = [f.result() for f in futures]
+        results: List[Optional[PositionAnalysis]] = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except Exception:
+                results.append(None)
 
         return results
     
