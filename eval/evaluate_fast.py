@@ -181,7 +181,7 @@ def generate_moves_batch(
     top_p: float = 0.95,
     top_k: int = 20,
     min_p: float = 0.0,
-    generator: Optional[torch.Generator] = None,
+    seed: Optional[int] = None,
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
     max_total_tokens: int = MAX_TOTAL_TOKENS,
 ) -> List[Tuple[Optional[str], str]]:
@@ -193,6 +193,7 @@ def generate_moves_batch(
         tokenizer: The tokenizer to use
         boards: List of chess boards
         max_new_tokens: Maximum new tokens to generate
+        seed: Optional RNG seed for sampling (applied per-batch; does not affect global RNG)
         prompt_template: Template for the prompt
         max_total_tokens: Maximum total tokens (input + generation)
 
@@ -230,8 +231,6 @@ def generate_moves_batch(
     )
     if eos_token_ids:
         generate_kwargs["eos_token_id"] = eos_token_ids
-    if generator is not None:
-        generate_kwargs["generator"] = generator
 
     if do_sample:
         generate_kwargs["temperature"] = float(temperature)
@@ -242,7 +241,16 @@ def generate_moves_batch(
             generate_kwargs["min_p"] = float(min_p)
 
     # Generate with greedy decoding (faster than sampling)
-    outputs = model.generate(**generate_kwargs)
+    device = inputs["input_ids"].device
+    fork_devices: List[int] = []
+    if device.type == "cuda" and device.index is not None:
+        fork_devices = [int(device.index)]
+    with torch.random.fork_rng(devices=fork_devices, enabled=True):
+        if do_sample and seed is not None:
+            torch.manual_seed(int(seed))
+            if device.type == "cuda":
+                torch.cuda.manual_seed_all(int(seed))
+        outputs = model.generate(**generate_kwargs)
     
     # Decode responses
     results = []
@@ -590,11 +598,6 @@ def evaluate_model(
 
     max_input_length = max_total_tokens - max_new_tokens
 
-    generator: Optional[torch.Generator] = None
-    if do_sample:
-        generator = torch.Generator(device=model.device)
-        generator.manual_seed(int(seed))
-
     # Phase 1: Batched model inference
     logger.info("Phase 1: generating moves (batch_size=%s, max_total_tokens=%s, max_input=%s, max_new_tokens=%s)",
                 batch_size, max_total_tokens, max_input_length, max_new_tokens)
@@ -604,6 +607,9 @@ def evaluate_model(
         boards = [chess.Board(pos['fen']) for pos in batch_positions]
 
         # Generate moves for batch
+        batch_seed: Optional[int] = None
+        if do_sample:
+            batch_seed = int(seed) + int(i)
         batch_results = generate_moves_batch(
             model,
             tokenizer,
@@ -614,7 +620,7 @@ def evaluate_model(
             top_p=top_p,
             top_k=top_k,
             min_p=min_p,
-            generator=generator,
+            seed=batch_seed,
             max_total_tokens=max_total_tokens,
         )
         

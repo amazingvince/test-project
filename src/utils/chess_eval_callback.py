@@ -263,6 +263,7 @@ class FastChessEvalCallback(TrainerCallback):
         self.print_samples = max(0, int(print_samples))
         self.print_max_chars = max(0, int(print_max_chars))
         self._original_padding_side = getattr(tokenizer, "padding_side", "right")
+        self._last_eval_step = -1
 
         # Validate that there's room for input tokens
         min_input_tokens = 100  # Reasonable minimum for a chess prompt
@@ -276,22 +277,37 @@ class FastChessEvalCallback(TrainerCallback):
             )
 
     def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step <= 0:
+        # Run chess eval after checkpoints are written (on_save). This keeps training
+        # robust: even if eval fails, the latest checkpoint already exists.
+        return
+
+    def on_save(self, args, state, control, **kwargs):
+        step = int(getattr(state, "global_step", 0) or 0)
+        if step <= 0:
             return
         if self.eval_every_n_steps <= 0:
             return
-        if state.global_step % self.eval_every_n_steps != 0:
+        if step % self.eval_every_n_steps != 0:
+            return
+        if step == self._last_eval_step:
             return
         model = kwargs.get("model")
         if model is None:
             return
-        self._run(model, step=state.global_step, final=False)
+        self._last_eval_step = step
+        try:
+            self._run(model, step=step, final=False)
+        except Exception:
+            logger.exception("Chess eval failed at step %s (continuing training).", step)
 
     def on_train_end(self, args, state, control, **kwargs):
         model = kwargs.get("model")
         if model is None:
             return
-        self._run(model, step=state.global_step, final=True)
+        try:
+            self._run(model, step=state.global_step, final=True)
+        except Exception:
+            logger.exception("Final chess eval failed at step %s.", state.global_step)
 
     @torch.inference_mode()
     def _run(self, model, *, step: int, final: bool) -> None:
@@ -383,14 +399,19 @@ class FastChessEvalCallback(TrainerCallback):
                     if self.min_p is not None and hasattr(model.generation_config, "min_p"):
                         generate_kwargs["min_p"] = float(self.min_p)
 
-                    device = inputs["input_ids"].device
-                    generator = torch.Generator(device=device)
-                    generator.manual_seed(self.seed + int(step))
-                    generate_kwargs["generator"] = generator
-
                 used_max_new_tokens = max_new_tokens
                 gen_started = time.perf_counter()
-                outputs = model.generate(**generate_kwargs)
+                device = inputs["input_ids"].device
+                fork_devices: List[int] = []
+                if device.type == "cuda" and device.index is not None:
+                    fork_devices = [int(device.index)]
+                with torch.random.fork_rng(devices=fork_devices, enabled=True):
+                    if self.do_sample:
+                        seed_value = self.seed + int(step)
+                        torch.manual_seed(seed_value)
+                        if device.type == "cuda":
+                            torch.cuda.manual_seed_all(seed_value)
+                    outputs = model.generate(**generate_kwargs)
                 gen_seconds += time.perf_counter() - gen_started
 
                 for i, seq in enumerate(outputs):
@@ -538,6 +559,8 @@ class FastChessEvalCallback(TrainerCallback):
                     wandb.log(payload, step=step)
             except Exception:
                 return
+        except Exception:
+            logger.exception("Chess eval crashed at step %s (continuing).", step)
         finally:
             self.tokenizer.padding_side = self._original_padding_side
             model.train()
