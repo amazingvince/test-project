@@ -657,8 +657,8 @@ class FastChessEvalCallback(TrainerCallback):
             cpl = r.get("cpl")
 
             print(
-                f\"\n[{i}/{n}] source={source} format={has_uci_tag} legal={is_legal} correct={is_correct} \"
-                f\"(loose legal={is_legal_loose} correct={is_correct_loose}) cpl={cpl if cpl is not None else 'n/a'}\"
+                f"\n[{i}/{n}] source={source} format={has_uci_tag} legal={is_legal} correct={is_correct} "
+                f"(loose legal={is_legal_loose} correct={is_correct_loose}) cpl={cpl if cpl is not None else 'n/a'}"
             )
             if fen:
                 print(f"FEN: {fen}")
