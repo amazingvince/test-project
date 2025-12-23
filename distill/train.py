@@ -214,7 +214,12 @@ class DistillationTrainer(Trainer):
                 "distillation.move_distill_mode must be 'move_token' or 'move_prefix' "
                 f"(got {move_distill_mode!r})"
             )
-        if move_distill_mode == "move_token" and not self.move_to_token_id:
+        if (
+            move_distill_mode == "move_token"
+            and self.kl_weight > 0.0
+            and self.distill_loss_fn is not None
+            and not self.move_to_token_id
+        ):
             raise ValueError(
                 "move_distill_mode='move_token' requires UCI move tokens. "
                 "Set tokenizer.chess_mode='tags_and_moves' or switch to move_prefix."
@@ -288,235 +293,239 @@ class DistillationTrainer(Trainer):
                 )
 
         # STEP 2: If no distillation, return CE loss only
-        if self.distill_loss_fn is None or soft_targets is None:
-            return (ce_loss, outputs) if return_outputs else ce_loss
-
-        # STEP 3: Compute KL loss on move position
-        kl_applied_ratio = None
-        if self.move_distill_mode == "move_prefix":
-            tokenizer = getattr(self, "processing_class", None)
-            if tokenizer is None:
-                raise ValueError("Trainer is missing tokenizer/processing_class (required for move_prefix distillation).")
-
-            temperature = float(getattr(self.distill_loss_fn, "temperature", 1.0) or 1.0)
-            loss_terms: List[torch.Tensor] = []
+        if self.kl_weight <= 0.0 or self.distill_loss_fn is None or soft_targets is None:
+            kl_loss = torch.tensor(0.0, device=device)
+            loss_dict = {"soft_loss": 0.0, "hard_loss": 0.0}
             move_pos_found_ratio = None
             mapped_prob_ratios = []
             mapped_move_fracs = []
             student_logits = None
-
-            if move_positions is not None:
-                move_positions = move_positions.to(device)
-                valid_mask = (move_positions >= 0) & (move_positions < seq_len)
-                move_pos_found_ratio = valid_mask.float().mean().item()
-
-                if batch_size == 1 and move_positions.numel() != batch_size:
-                    # Packed batch: all positions live in batch item 0.
-                    logits_view = logits[0]
-                    for idx, is_valid in enumerate(valid_mask.tolist()):
-                        if not is_valid:
-                            continue
-                        soft_target = soft_targets[idx]
-                        if not soft_target:
-                            continue
-                        best_move = max(soft_target.items(), key=lambda x: x[1])[0]
-                        best_tokens = tokenizer.encode(best_move, add_special_tokens=False)
-                        if not best_tokens:
-                            continue
-
-                        token_cache = {
-                            move: tokenizer.encode(move, add_special_tokens=False)
-                            for move in soft_target.keys()
-                        }
-
-                        base_pos = int(move_positions[idx])
-                        for k in range(len(best_tokens)):
-                            pos = base_pos + k
-                            if pos >= logits_view.shape[0]:
-                                break
-
-                            prefix = best_tokens[:k]
-                            next_token_probs: Dict[int, float] = {}
-                            total = 0.0
-                            for move, prob in soft_target.items():
-                                seq = token_cache.get(move) or []
-                                if len(seq) <= k or seq[:k] != prefix:
-                                    continue
-                                next_token = int(seq[k])
-                                next_token_probs[next_token] = next_token_probs.get(next_token, 0.0) + float(prob)
-                                total += float(prob)
-
-                            if total <= 0.0:
-                                break
-
-                            token_ids = torch.tensor(list(next_token_probs.keys()), device=device, dtype=torch.long)
-                            teacher = torch.tensor(list(next_token_probs.values()), device=device, dtype=torch.float32)
-                            teacher = teacher / teacher.sum()
-
-                            log_probs = F.log_softmax(logits_view[pos].float() / temperature, dim=-1)
-                            loss_terms.append(-(teacher * log_probs.gather(0, token_ids)).sum())
-                else:
-                    # Standard batch: one sample per batch row.
-                    for idx, is_valid in enumerate(valid_mask.tolist()):
-                        if not is_valid:
-                            continue
-                        soft_target = soft_targets[idx]
-                        if not soft_target:
-                            continue
-                        best_move = max(soft_target.items(), key=lambda x: x[1])[0]
-                        best_tokens = tokenizer.encode(best_move, add_special_tokens=False)
-                        if not best_tokens:
-                            continue
-
-                        token_cache = {
-                            move: tokenizer.encode(move, add_special_tokens=False)
-                            for move in soft_target.keys()
-                        }
-
-                        base_pos = int(move_positions[idx])
-                        for k in range(len(best_tokens)):
-                            pos = base_pos + k
-                            if pos >= seq_len:
-                                break
-
-                            prefix = best_tokens[:k]
-                            next_token_probs: Dict[int, float] = {}
-                            total = 0.0
-                            for move, prob in soft_target.items():
-                                seq = token_cache.get(move) or []
-                                if len(seq) <= k or seq[:k] != prefix:
-                                    continue
-                                next_token = int(seq[k])
-                                next_token_probs[next_token] = next_token_probs.get(next_token, 0.0) + float(prob)
-                                total += float(prob)
-
-                            if total <= 0.0:
-                                break
-
-                            token_ids = torch.tensor(list(next_token_probs.keys()), device=device, dtype=torch.long)
-                            teacher = torch.tensor(list(next_token_probs.values()), device=device, dtype=torch.float32)
-                            teacher = teacher / teacher.sum()
-
-                            log_probs = F.log_softmax(logits[idx, pos].float() / temperature, dim=-1)
-                            loss_terms.append(-(teacher * log_probs.gather(0, token_ids)).sum())
-
-            if loss_terms:
-                kl_loss = torch.stack(loss_terms).mean()
-                if temperature != 1.0:
-                    kl_loss = kl_loss * (temperature ** 2)
-            else:
-                kl_loss = torch.tensor(0.0, device=device)
-
-            loss_dict = {"soft_loss": float(kl_loss.detach().cpu()), "hard_loss": 0.0}
         else:
-            # move_token mode: KL over a single move token.
-            # Create teacher probability tensors
-            teacher_probs_batch = []
-            hard_targets_batch = []
-            mapped_prob_ratios = []
-            mapped_move_fracs = []
-            distillable_batch = []
+            # STEP 3: Compute KL loss on move position
+            if self.move_distill_mode == "move_prefix":
+                tokenizer = getattr(self, "processing_class", None)
+                if tokenizer is None:
+                    raise ValueError("Trainer is missing tokenizer/processing_class (required for move_prefix distillation).")
 
-            for i, soft_target in enumerate(soft_targets):
-                if soft_target is None:
-                    # Fallback: uniform distribution
-                    teacher_probs = torch.ones(vocab_size, device=device) / vocab_size
-                    mapped_prob_ratios.append(0.0)
-                    mapped_move_fracs.append(0.0)
-                    distillable_batch.append(False)
+                temperature = float(getattr(self.distill_loss_fn, "temperature", 1.0) or 1.0)
+                loss_terms: List[torch.Tensor] = []
+                move_pos_found_ratio = None
+                mapped_prob_ratios = []
+                mapped_move_fracs = []
+                student_logits = None
+
+                if move_positions is not None:
+                    move_positions = move_positions.to(device)
+                    valid_mask = (move_positions >= 0) & (move_positions < seq_len)
+                    move_pos_found_ratio = valid_mask.float().mean().item()
+
+                    if batch_size == 1 and move_positions.numel() != batch_size:
+                        # Packed batch: all positions live in batch item 0.
+                        logits_view = logits[0]
+                        for idx, is_valid in enumerate(valid_mask.tolist()):
+                            if not is_valid:
+                                continue
+                            soft_target = soft_targets[idx]
+                            if not soft_target:
+                                continue
+                            best_move = max(soft_target.items(), key=lambda x: x[1])[0]
+                            best_tokens = tokenizer.encode(best_move, add_special_tokens=False)
+                            if not best_tokens:
+                                continue
+
+                            token_cache = {
+                                move: tokenizer.encode(move, add_special_tokens=False)
+                                for move in soft_target.keys()
+                            }
+
+                            base_pos = int(move_positions[idx])
+                            for k in range(len(best_tokens)):
+                                pos = base_pos + k
+                                if pos >= logits_view.shape[0]:
+                                    break
+
+                                prefix = best_tokens[:k]
+                                next_token_probs: Dict[int, float] = {}
+                                total = 0.0
+                                for move, prob in soft_target.items():
+                                    seq = token_cache.get(move) or []
+                                    if len(seq) <= k or seq[:k] != prefix:
+                                        continue
+                                    next_token = int(seq[k])
+                                    next_token_probs[next_token] = next_token_probs.get(next_token, 0.0) + float(prob)
+                                    total += float(prob)
+
+                                if total <= 0.0:
+                                    break
+
+                                token_ids = torch.tensor(list(next_token_probs.keys()), device=device, dtype=torch.long)
+                                teacher = torch.tensor(list(next_token_probs.values()), device=device, dtype=torch.float32)
+                                teacher = teacher / teacher.sum()
+
+                                log_probs = F.log_softmax(logits_view[pos].float() / temperature, dim=-1)
+                                loss_terms.append(-(teacher * log_probs.gather(0, token_ids)).sum())
+                    else:
+                        # Standard batch: one sample per batch row.
+                        for idx, is_valid in enumerate(valid_mask.tolist()):
+                            if not is_valid:
+                                continue
+                            soft_target = soft_targets[idx]
+                            if not soft_target:
+                                continue
+                            best_move = max(soft_target.items(), key=lambda x: x[1])[0]
+                            best_tokens = tokenizer.encode(best_move, add_special_tokens=False)
+                            if not best_tokens:
+                                continue
+
+                            token_cache = {
+                                move: tokenizer.encode(move, add_special_tokens=False)
+                                for move in soft_target.keys()
+                            }
+
+                            base_pos = int(move_positions[idx])
+                            for k in range(len(best_tokens)):
+                                pos = base_pos + k
+                                if pos >= seq_len:
+                                    break
+
+                                prefix = best_tokens[:k]
+                                next_token_probs: Dict[int, float] = {}
+                                total = 0.0
+                                for move, prob in soft_target.items():
+                                    seq = token_cache.get(move) or []
+                                    if len(seq) <= k or seq[:k] != prefix:
+                                        continue
+                                    next_token = int(seq[k])
+                                    next_token_probs[next_token] = next_token_probs.get(next_token, 0.0) + float(prob)
+                                    total += float(prob)
+
+                                if total <= 0.0:
+                                    break
+
+                                token_ids = torch.tensor(list(next_token_probs.keys()), device=device, dtype=torch.long)
+                                teacher = torch.tensor(list(next_token_probs.values()), device=device, dtype=torch.float32)
+                                teacher = teacher / teacher.sum()
+
+                                log_probs = F.log_softmax(logits[idx, pos].float() / temperature, dim=-1)
+                                loss_terms.append(-(teacher * log_probs.gather(0, token_ids)).sum())
+
+                if loss_terms:
+                    kl_loss = torch.stack(loss_terms).mean()
+                    if temperature != 1.0:
+                        kl_loss = kl_loss * (temperature ** 2)
                 else:
-                    total_prob = sum(soft_target.values())
-                    mapped_prob = sum(
-                        prob for move, prob in soft_target.items()
-                        if move in self.move_to_token_id
-                    )
-                    mapped_count = sum(
-                        1 for move in soft_target
-                        if move in self.move_to_token_id
-                    )
-                    mapped_prob_ratios.append(
-                        (mapped_prob / total_prob) if total_prob > 0 else 0.0
-                    )
-                    mapped_move_fracs.append(
-                        (mapped_count / len(soft_target)) if soft_target else 0.0
-                    )
-                    distillable_batch.append(mapped_count > 0)
-                    # Convert move_probs dict to tensor
-                    teacher_probs = create_soft_target_tensor(
-                        move_probs=soft_target,
-                        vocab_size=vocab_size,
-                        move_to_token_id=self.move_to_token_id,
-                        device=device,
-                    )
-                teacher_probs_batch.append(teacher_probs)
+                    kl_loss = torch.tensor(0.0, device=device)
 
-                # Get hard target (most likely move in teacher distribution)
-                if soft_target:
-                    best_move = max(soft_target.items(), key=lambda x: x[1])[0]
-                    if best_move in self.move_to_token_id:
-                        hard_targets_batch.append(self.move_to_token_id[best_move])
+                loss_dict = {"soft_loss": float(kl_loss.detach().cpu()), "hard_loss": 0.0}
+            else:
+                # move_token mode: KL over a single move token.
+                # Create teacher probability tensors
+                teacher_probs_batch = []
+                hard_targets_batch = []
+                mapped_prob_ratios = []
+                mapped_move_fracs = []
+                distillable_batch = []
+
+                for i, soft_target in enumerate(soft_targets):
+                    if soft_target is None:
+                        # Fallback: uniform distribution
+                        teacher_probs = torch.ones(vocab_size, device=device) / vocab_size
+                        mapped_prob_ratios.append(0.0)
+                        mapped_move_fracs.append(0.0)
+                        distillable_batch.append(False)
+                    else:
+                        total_prob = sum(soft_target.values())
+                        mapped_prob = sum(
+                            prob for move, prob in soft_target.items()
+                            if move in self.move_to_token_id
+                        )
+                        mapped_count = sum(
+                            1 for move in soft_target
+                            if move in self.move_to_token_id
+                        )
+                        mapped_prob_ratios.append(
+                            (mapped_prob / total_prob) if total_prob > 0 else 0.0
+                        )
+                        mapped_move_fracs.append(
+                            (mapped_count / len(soft_target)) if soft_target else 0.0
+                        )
+                        distillable_batch.append(mapped_count > 0)
+                        # Convert move_probs dict to tensor
+                        teacher_probs = create_soft_target_tensor(
+                            move_probs=soft_target,
+                            vocab_size=vocab_size,
+                            move_to_token_id=self.move_to_token_id,
+                            device=device,
+                        )
+                    teacher_probs_batch.append(teacher_probs)
+
+                    # Get hard target (most likely move in teacher distribution)
+                    if soft_target:
+                        best_move = max(soft_target.items(), key=lambda x: x[1])[0]
+                        if best_move in self.move_to_token_id:
+                            hard_targets_batch.append(self.move_to_token_id[best_move])
+                        else:
+                            hard_targets_batch.append(0)
                     else:
                         hard_targets_batch.append(0)
-                else:
-                    hard_targets_batch.append(0)
 
-            teacher_probs_tensor = torch.stack(teacher_probs_batch)  # (batch, vocab)
-            hard_targets_tensor = torch.tensor(hard_targets_batch, device=device)
-            distillable_mask = torch.tensor(distillable_batch, device=device, dtype=torch.bool)
+                teacher_probs_tensor = torch.stack(teacher_probs_batch)  # (batch, vocab)
+                hard_targets_tensor = torch.tensor(hard_targets_batch, device=device)
+                distillable_mask = torch.tensor(distillable_batch, device=device, dtype=torch.bool)
 
-            # Get student logits at move position
-            # For causal LM, logits at position t predict token t+1.
-            # We want logits at the <uci_move> tag position to predict the move token.
-            move_pos_found_ratio = None
-            kl_applied_ratio = None
-            if move_positions is not None:
-                move_positions = move_positions.to(device)
-                valid_mask = (move_positions >= 0) & (move_positions < seq_len)
-                move_pos_found_ratio = valid_mask.float().mean().item()
-                keep_mask = valid_mask & distillable_mask
-                kl_applied_ratio = keep_mask.float().mean().item()
+                # Get student logits at move position
+                # For causal LM, logits at position t predict token t+1.
+                # We want logits at the <uci_move> tag position to predict the move token.
+                move_pos_found_ratio = None
+                kl_applied_ratio = None
+                if move_positions is not None:
+                    move_positions = move_positions.to(device)
+                    valid_mask = (move_positions >= 0) & (move_positions < seq_len)
+                    move_pos_found_ratio = valid_mask.float().mean().item()
+                    keep_mask = valid_mask & distillable_mask
+                    kl_applied_ratio = keep_mask.float().mean().item()
 
-                if keep_mask.any():
-                    if batch_size == 1 and move_positions.numel() != batch_size:
-                        # Packed batch: a single flattened sequence that contains multiple
-                        # original samples. All move positions belong to batch item 0.
-                        student_logits = logits[0, move_positions[keep_mask]]
+                    if keep_mask.any():
+                        if batch_size == 1 and move_positions.numel() != batch_size:
+                            # Packed batch: a single flattened sequence that contains multiple
+                            # original samples. All move positions belong to batch item 0.
+                            student_logits = logits[0, move_positions[keep_mask]]
+                        else:
+                            # Standard batch: one move position per batch item.
+                            batch_indices = torch.arange(batch_size, device=device)[keep_mask]
+                            student_logits = logits[batch_indices, move_positions[keep_mask]]
+                        teacher_probs_tensor = teacher_probs_tensor[keep_mask]
+                        hard_targets_tensor = hard_targets_tensor[keep_mask]
                     else:
-                        # Standard batch: one move position per batch item.
-                        batch_indices = torch.arange(batch_size, device=device)[keep_mask]
-                        student_logits = logits[batch_indices, move_positions[keep_mask]]
-                    teacher_probs_tensor = teacher_probs_tensor[keep_mask]
-                    hard_targets_tensor = hard_targets_tensor[keep_mask]
+                        student_logits = None
                 else:
-                    student_logits = None
-            else:
-                # Fallback: use last non-padding position (less reliable)
-                attention_mask = inputs.get('attention_mask')
-                if attention_mask is not None:
-                    seq_lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
-                    batch_indices = torch.arange(batch_size, device=device)
-                    student_logits = logits[batch_indices, seq_lengths]  # (batch, vocab)
-                else:
-                    student_logits = logits[:, -2, :]  # (batch, vocab)
-                keep_mask = distillable_mask
-                kl_applied_ratio = keep_mask.float().mean().item()
-                if keep_mask.any():
-                    student_logits = student_logits[keep_mask]
-                    teacher_probs_tensor = teacher_probs_tensor[keep_mask]
-                    hard_targets_tensor = hard_targets_tensor[keep_mask]
-                else:
-                    student_logits = None
+                    # Fallback: use last non-padding position (less reliable)
+                    attention_mask = inputs.get('attention_mask')
+                    if attention_mask is not None:
+                        seq_lengths = attention_mask.sum(dim=1) - 1  # -1 for 0-indexing
+                        batch_indices = torch.arange(batch_size, device=device)
+                        student_logits = logits[batch_indices, seq_lengths]  # (batch, vocab)
+                    else:
+                        student_logits = logits[:, -2, :]  # (batch, vocab)
+                    keep_mask = distillable_mask
+                    kl_applied_ratio = keep_mask.float().mean().item()
+                    if keep_mask.any():
+                        student_logits = student_logits[keep_mask]
+                        teacher_probs_tensor = teacher_probs_tensor[keep_mask]
+                        hard_targets_tensor = hard_targets_tensor[keep_mask]
+                    else:
+                        student_logits = None
 
-            # Compute distillation loss (KL on move position)
-            if student_logits is None:
-                kl_loss = torch.tensor(0.0, device=device)
-                loss_dict = {'soft_loss': 0.0, 'hard_loss': 0.0}
-            else:
-                kl_loss, loss_dict = self.distill_loss_fn(
-                    student_logits=student_logits,
-                    teacher_probs=teacher_probs_tensor,
-                    hard_targets=hard_targets_tensor,
-                )
+                # Compute distillation loss (KL on move position)
+                if student_logits is None:
+                    kl_loss = torch.tensor(0.0, device=device)
+                    loss_dict = {'soft_loss': 0.0, 'hard_loss': 0.0}
+                else:
+                    kl_loss, loss_dict = self.distill_loss_fn(
+                        student_logits=student_logits,
+                        teacher_probs=teacher_probs_tensor,
+                        hard_targets=hard_targets_tensor,
+                    )
 
         # STEP 4: Combine losses
         # ce_loss: Teaches thinking text via cross-entropy
