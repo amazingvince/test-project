@@ -1,14 +1,9 @@
 """
-Streaming SFT collator with on-the-fly Stockfish analysis and reasoning traces.
+Streaming SFT collator that generates distill-style messages on the fly.
 
-This mirrors distillation's streaming collator:
-- sample raw positions from HF streaming datasets
-- run Stockfish per-batch via `StockfishTeacher`
-- generate distill-style reasoning traces + `<uci_move>...</uci_move>` targets
-- tokenize with prompt masking (train only on assistant tokens)
-
-The output keys match what `sft/train.py`'s trainer expects:
-`input_ids`, `attention_mask`, `labels`, `loss_weights`.
+This is intended for `sft/train.py --streaming` when `reasoning_trace.enabled: true`.
+It runs Stockfish at batch time, generates a reasoning trace (if configured), and
+tokenizes with prompt masking so the loss is computed only on assistant tokens.
 """
 
 from __future__ import annotations
@@ -16,61 +11,86 @@ from __future__ import annotations
 import random
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Sequence
 
 import chess
-try:
-    import torch
-except ImportError:  # pragma: no cover - torch is optional for lightweight test envs
-    torch = None  # type: ignore[assignment]
-
-from src.distill.formatting_distill import create_distillation_example
+from src.distill.formatting_distill import (
+    DISTILLATION_PROMPT_TEMPLATE,
+    DISTILLATION_PROMPT_TEMPLATE_NO_BOARD,
+    DISTILLATION_RESPONSE_TEMPLATE,
+    create_distillation_example,
+)
 from src.distill.reasoning_trace import ReasoningTraceGenerator
-from src.distill.stockfish_teacher import StockfishTeacher
+from src.utils.chess_utils import get_first_legal_move, get_legal_moves_uci, render_board_utf
+
+if TYPE_CHECKING:  # pragma: no cover
+    import torch
+    from src.distill.stockfish_teacher import PositionAnalysis
 
 
-def _compute_elo_weight(example: Dict[str, Any], config: Dict[str, Any]) -> float:
-    loss_cfg = (config or {}).get("loss_weighting", {})
-    if not loss_cfg.get("enabled", False):
-        return 1.0
-    if loss_cfg.get("method") != "elo":
-        return 1.0
+class StockfishBatchAnalyzer(Protocol):
+    """Minimum interface needed from `StockfishTeacher` for streaming SFT traces."""
 
-    white = int(example.get("white_elo") or 1500)
-    black = int(example.get("black_elo") or 1500)
-    avg = (white + black) / 2.0
+    def analyze_batch(
+        self,
+        fens: Sequence[str],
+        analysis_overrides: Optional[List[Optional[Dict[str, Any]]]] = None,
+    ) -> List[Optional["PositionAnalysis"]]:
+        ...
 
-    elo_min = float(loss_cfg.get("elo_min", 1200))
-    elo_max = float(loss_cfg.get("elo_max", 2400))
-    w_min = float(loss_cfg.get("min_weight", 0.5))
-    w_max = float(loss_cfg.get("max_weight", 2.0))
-    fn = str(loss_cfg.get("function", "linear"))
 
-    if elo_max <= elo_min:
-        return 1.0
+def _fallback_messages(
+    example: Dict[str, Any],
+    *,
+    include_board: bool,
+    target_move_uci: str,
+) -> List[Dict[str, str]]:
+    fen = example["fen"]
+    board = chess.Board(fen)
 
-    if fn == "gaussian":
-        target = float(loss_cfg.get("target_elo", 1900))
-        sigma = float(loss_cfg.get("gaussian_sigma", 400))
-        sigma = max(1.0, sigma)
-        # Weight in [0, 1]
-        import math
+    fen_parts = fen.split()
+    side_to_move = (
+        example.get("side_to_move")
+        or ("White" if len(fen_parts) > 1 and fen_parts[1] == "w" else "Black")
+    )
+    legal_moves = example.get("legal_moves_uci") or get_legal_moves_uci(board)
+    example_move = (
+        example.get("first_legal_move")
+        or get_first_legal_move(board)
+        or (legal_moves.split()[0] if legal_moves else "")
+    )
+    board_utf = example.get("board_utf") or render_board_utf(board)
 
-        z = (avg - target) / sigma
-        t = math.exp(-0.5 * z * z)
+    if include_board:
+        user_content = DISTILLATION_PROMPT_TEMPLATE.format(
+            fen=fen,
+            legal_moves=legal_moves,
+            board=board_utf,
+            side_to_move=side_to_move,
+            example_move=example_move,
+        )
     else:
-        # Linear fallback.
-        t = (avg - elo_min) / (elo_max - elo_min)
-        t = max(0.0, min(1.0, t))
+        user_content = DISTILLATION_PROMPT_TEMPLATE_NO_BOARD.format(
+            fen=fen,
+            legal_moves=legal_moves,
+            side_to_move=side_to_move,
+            example_move=example_move,
+        )
 
-    return w_min + t * (w_max - w_min)
+    assistant_content = DISTILLATION_RESPONSE_TEMPLATE.format(
+        thinking="Choosing a legal move.",
+        move=target_move_uci,
+    )
+    return [
+        {"role": "user", "content": user_content},
+        {"role": "assistant", "content": assistant_content},
+    ]
 
 
 @dataclass
 class StreamingSFTStockfishTraceCollator:
     tokenizer: Any
-    teacher: StockfishTeacher
-    config: Dict[str, Any]
+    teacher: StockfishBatchAnalyzer
     reasoning_trace_generator: Optional[ReasoningTraceGenerator] = None
 
     max_length: int = 2048
@@ -87,9 +107,9 @@ class StreamingSFTStockfishTraceCollator:
     def __post_init__(self) -> None:
         self._call_count = 0
 
-    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        if torch is None:
-            raise ImportError("StreamingSFTStockfishTraceCollator requires torch.")
+    def __call__(self, examples: List[Dict[str, Any]]) -> Dict[str, "torch.Tensor"]:
+        import torch
+
         self._call_count += 1
         batch_rng = random.Random(self.seed + self._call_count)
 
@@ -97,7 +117,7 @@ class StreamingSFTStockfishTraceCollator:
         try:
             analyses = self.teacher.analyze_batch(fens)
         except Exception as exc:
-            warnings.warn(f"Stockfish analysis failed: {exc}. Falling back to empty analyses.")
+            warnings.warn(f"Stockfish analysis failed: {exc}. Falling back to minimal messages.")
             analyses = [None] * len(examples)
 
         batch_input_ids: List[List[int]] = []
@@ -107,14 +127,13 @@ class StreamingSFTStockfishTraceCollator:
 
         for ex, analysis in zip(examples, analyses):
             if analysis is None:
-                # If Stockfish fails, don't crash training: emit a minimal target.
-                # Use the provided move if present; otherwise try the first legal move.
                 board = chess.Board(ex["fen"])
-                target_move = ex.get("target_move_uci") or next(iter(board.legal_moves)).uci()
-                messages = [
-                    {"role": "user", "content": f"FEN: {ex['fen']}\nLegal moves (UCI): {' '.join(m.uci() for m in board.legal_moves)}"},
-                    {"role": "assistant", "content": f"<think>Selecting a legal move.</think>\n<uci_move>{target_move}</uci_move>"},
-                ]
+                target_move = ex.get("target_move_uci") or get_first_legal_move(board) or ""
+                messages = _fallback_messages(
+                    ex,
+                    include_board=self.include_board,
+                    target_move_uci=target_move,
+                )
             else:
                 result = create_distillation_example(
                     fen=ex["fen"],
@@ -164,7 +183,7 @@ class StreamingSFTStockfishTraceCollator:
             batch_input_ids.append(input_ids)
             batch_attention_mask.append(attention_mask)
             batch_labels.append(labels)
-            batch_weights.append(float(ex.get("loss_weight", _compute_elo_weight(ex, self.config))))
+            batch_weights.append(float(ex.get("loss_weight", 1.0)))
 
         max_len = max(len(ids) for ids in batch_input_ids)
         if self.pad_to_multiple_of:

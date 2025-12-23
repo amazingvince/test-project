@@ -17,7 +17,7 @@ import argparse
 import yaml
 import random
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from dataclasses import dataclass
 import warnings
 
@@ -41,6 +41,10 @@ from transformers import (
 
 from src.utils.chess_eval_callback import FastChessEvalCallback as ChessEvalCallback, prepare_eval_positions
 from src.utils.chess_tokenizer import ChessTokenizerMode, add_chess_tokens, generate_all_uci_moves
+
+if TYPE_CHECKING:  # pragma: no cover
+    from src.distill.reasoning_trace import ReasoningTraceGenerator
+    from src.distill.stockfish_teacher import StockfishTeacher
 
 # ============================================================================
 # Performance optimizations - set early
@@ -740,6 +744,57 @@ def load_or_create_dataset(
             return train_dataset, eval_dataset
         
         return dataset, None
+ 
+ 
+def init_streaming_sft_reasoning_components(
+    config: Dict[str, Any],
+    tokenizer,
+) -> tuple[Optional["StockfishTeacher"], Optional["ReasoningTraceGenerator"]]:
+    """
+    Initialize batch-time Stockfish + reasoning-trace generation for streaming SFT.
+
+    Returns:
+        (teacher, trace_generator) if enabled, otherwise (None, None).
+    """
+
+    reasoning_cfg = config.get("reasoning_trace", {})
+    if not reasoning_cfg.get("enabled"):
+        return None, None
+
+    from src.distill.reasoning_trace import ReasoningTraceGenerator
+    from src.utils.stockfish_teacher_factory import create_stockfish_teacher
+
+    stockfish_cfg = config.get("stockfish", {})
+    distill_cfg = config.get("distillation", {})
+
+    print("\nInitializing StockfishTeacher for streaming SFT traces...")
+    teacher = create_stockfish_teacher(
+        stockfish_config=stockfish_cfg,
+        distillation_config=distill_cfg,
+    )
+    print("StockfishTeacher created")
+    print("  Initializing Stockfish workers...")
+    _ = teacher.analyze_position(chess.STARTING_FEN)
+    print("  Workers ready")
+
+    trace_generator = ReasoningTraceGenerator(reasoning_cfg, tokenizer=tokenizer)
+    trace_status = trace_generator.status()
+    opening_detail = ""
+    if not trace_status.get("opening_available"):
+        opening_detail = trace_status.get("opening_error") or "unavailable"
+    tablebase_detail = ""
+    if not trace_status.get("tablebase_available"):
+        tablebase_detail = trace_status.get("tablebase_error") or "unavailable"
+    print(
+        "Reasoning trace enabled: "
+        f"opening={trace_status.get('opening_available')}"
+        + (f" ({opening_detail})" if opening_detail else "")
+        + ", "
+        f"tablebase={trace_status.get('tablebase_available')}"
+        + (f" ({tablebase_detail})" if tablebase_detail else "")
+    )
+
+    return teacher, trace_generator
 
 
 def create_trainer(
@@ -751,8 +806,8 @@ def create_trainer(
     streaming: bool = False,
     use_cce: bool = True,
     chess_eval_callback: Optional[TrainerCallback] = None,
-    stockfish_teacher: Optional[Any] = None,
-    reasoning_trace_generator: Optional[Any] = None,
+    stockfish_teacher: Optional["StockfishTeacher"] = None,
+    reasoning_trace_generator: Optional["ReasoningTraceGenerator"] = None,
 ):
     """Create optimized trainer."""
     training_config = config.get('training', {})
@@ -842,14 +897,12 @@ def create_trainer(
     )
     
     # Data collator
-    data_collator: Any
     if streaming and reasoning_cfg.get("enabled") and stockfish_teacher is not None:
         from src.sft.streaming_trace_collator import StreamingSFTStockfishTraceCollator
 
         data_collator = StreamingSFTStockfishTraceCollator(
             tokenizer=tokenizer,
             teacher=stockfish_teacher,
-            config=config,
             reasoning_trace_generator=reasoning_trace_generator,
             max_length=model_config.get("max_seq_length", 1024),
             pad_to_multiple_of=8,
@@ -1047,44 +1100,11 @@ def main():
                 print("Stockfish not found - ACPL metrics disabled")
     
     print("\nCreating trainer...")
-    stockfish_teacher = None
-    reasoning_trace_generator = None
-    reasoning_cfg = config.get("reasoning_trace", {})
-    if args.streaming and reasoning_cfg.get("enabled"):
-        from src.distill.reasoning_trace import ReasoningTraceGenerator
-        from src.utils.stockfish_teacher_factory import create_stockfish_teacher
-
-        stockfish_cfg = config.get("stockfish", {})
-        distill_cfg = config.get("distillation", {})
-
-        print("\nInitializing StockfishTeacher for streaming SFT traces...")
-        stockfish_teacher = create_stockfish_teacher(
-            stockfish_config=stockfish_cfg,
-            distillation_config=distill_cfg,
-        )
-        print("StockfishTeacher created")
-        print("  Initializing Stockfish workers...")
-        _ = stockfish_teacher.analyze_position(chess.STARTING_FEN)
-        print("  Workers ready")
-
-        reasoning_trace_generator = ReasoningTraceGenerator(
-            reasoning_cfg,
-            tokenizer=tokenizer,
-        )
-        trace_status = reasoning_trace_generator.status()
-        opening_detail = ""
-        if not trace_status.get("opening_available"):
-            opening_detail = trace_status.get("opening_error") or "unavailable"
-        tablebase_detail = ""
-        if not trace_status.get("tablebase_available"):
-            tablebase_detail = trace_status.get("tablebase_error") or "unavailable"
-        print(
-            "Reasoning trace enabled: "
-            f"opening={trace_status.get('opening_available')}"
-            + (f" ({opening_detail})" if opening_detail else "")
-            + ", "
-            f"tablebase={trace_status.get('tablebase_available')}"
-            + (f" ({tablebase_detail})" if tablebase_detail else "")
+    stockfish_teacher, reasoning_trace_generator = (None, None)
+    if args.streaming:
+        stockfish_teacher, reasoning_trace_generator = init_streaming_sft_reasoning_components(
+            config,
+            tokenizer,
         )
 
     trainer = create_trainer(

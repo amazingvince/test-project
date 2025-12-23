@@ -8,6 +8,7 @@ default to align with move tokens.
 
 from __future__ import annotations
 
+import math
 import random
 import re
 from dataclasses import dataclass

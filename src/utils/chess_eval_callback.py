@@ -276,11 +276,6 @@ class FastChessEvalCallback(TrainerCallback):
                 old_value, self.max_total_tokens, self.max_new_tokens
             )
 
-    def on_step_end(self, args, state, control, **kwargs):
-        # Run chess eval after checkpoints are written (on_save). This keeps training
-        # robust: even if eval fails, the latest checkpoint already exists.
-        return
-
     def on_save(self, args, state, control, **kwargs):
         step = int(getattr(state, "global_step", 0) or 0)
         if step <= 0:
@@ -528,39 +523,42 @@ class FastChessEvalCallback(TrainerCallback):
 
             self._print_sample_outputs(results, step=step, final=final)
 
-            try:
-                import wandb
+            import importlib
 
-                if wandb.run is not None:
-                    payload: Dict[str, float] = {
-                        f"{prefix}chess/legal_move_rate": metrics.legal_move_rate,
-                        f"{prefix}chess/accuracy": metrics.accuracy,
-                        f"{prefix}chess/eval_seconds": eval_seconds,
-                        f"{prefix}chess/eval_gen_seconds": gen_seconds,
-                        f"{prefix}chess/eval_stockfish_seconds": stockfish_seconds,
-                    }
-                    if metrics.acpl is not None:
-                        payload[f"{prefix}chess/acpl"] = metrics.acpl
-                    if side_metrics["acpl_white"] is not None:
-                        payload[f"{prefix}chess/acpl_white"] = side_metrics["acpl_white"]
-                    if side_metrics["acpl_black"] is not None:
-                        payload[f"{prefix}chess/acpl_black"] = side_metrics["acpl_black"]
-                    for source, rows in per_source.items():
-                        sm = _compute_basic_metrics(rows)
-                        sm_side = _compute_acpl_by_side(rows)
-                        payload[f"{prefix}chess/{source}_legal_move_rate"] = sm.legal_move_rate
-                        payload[f"{prefix}chess/{source}_accuracy"] = sm.accuracy
-                        if sm.acpl is not None:
-                            payload[f"{prefix}chess/{source}_acpl"] = sm.acpl
-                        if sm_side["acpl_white"] is not None:
-                            payload[f"{prefix}chess/{source}_acpl_white"] = sm_side["acpl_white"]
-                        if sm_side["acpl_black"] is not None:
-                            payload[f"{prefix}chess/{source}_acpl_black"] = sm_side["acpl_black"]
+            try:
+                wandb = importlib.import_module("wandb")
+            except ImportError:
+                wandb = None
+
+            if wandb is not None and getattr(wandb, "run", None) is not None:
+                payload: Dict[str, float] = {
+                    f"{prefix}chess/legal_move_rate": metrics.legal_move_rate,
+                    f"{prefix}chess/accuracy": metrics.accuracy,
+                    f"{prefix}chess/eval_seconds": eval_seconds,
+                    f"{prefix}chess/eval_gen_seconds": gen_seconds,
+                    f"{prefix}chess/eval_stockfish_seconds": stockfish_seconds,
+                }
+                if metrics.acpl is not None:
+                    payload[f"{prefix}chess/acpl"] = metrics.acpl
+                if side_metrics["acpl_white"] is not None:
+                    payload[f"{prefix}chess/acpl_white"] = side_metrics["acpl_white"]
+                if side_metrics["acpl_black"] is not None:
+                    payload[f"{prefix}chess/acpl_black"] = side_metrics["acpl_black"]
+                for source, rows in per_source.items():
+                    sm = _compute_basic_metrics(rows)
+                    sm_side = _compute_acpl_by_side(rows)
+                    payload[f"{prefix}chess/{source}_legal_move_rate"] = sm.legal_move_rate
+                    payload[f"{prefix}chess/{source}_accuracy"] = sm.accuracy
+                    if sm.acpl is not None:
+                        payload[f"{prefix}chess/{source}_acpl"] = sm.acpl
+                    if sm_side["acpl_white"] is not None:
+                        payload[f"{prefix}chess/{source}_acpl_white"] = sm_side["acpl_white"]
+                    if sm_side["acpl_black"] is not None:
+                        payload[f"{prefix}chess/{source}_acpl_black"] = sm_side["acpl_black"]
+                try:
                     wandb.log(payload, step=step)
-            except Exception:
-                return
-        except Exception:
-            logger.exception("Chess eval crashed at step %s (continuing).", step)
+                except Exception:
+                    logger.exception("wandb.log failed during chess eval @ step %s.", step)
         finally:
             self.tokenizer.padding_side = self._original_padding_side
             model.train()

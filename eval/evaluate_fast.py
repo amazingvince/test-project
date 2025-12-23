@@ -240,7 +240,7 @@ def generate_moves_batch(
         if hasattr(model.generation_config, "min_p"):
             generate_kwargs["min_p"] = float(min_p)
 
-    # Generate with greedy decoding (faster than sampling)
+    # Generate sequences.
     device = inputs["input_ids"].device
     fork_devices: List[int] = []
     if device.type == "cuda" and device.index is not None:

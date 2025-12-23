@@ -14,6 +14,7 @@ This repo supports two common SFT targets:
 
 **Typical commands**
 - Streaming SFT (no local dataset): `python sft/train.py --config configs/sft/config_sft.yaml --streaming`
+- Streaming SFT with Stockfish reasoning traces (slow): `python sft/train.py --config configs/sft/config_with_eval.yaml --streaming`
 - Preprocessed SFT: `python sft/train.py --config configs/sft/config_sft.yaml --preprocessed_path ./data/chess_sft`
 - Preprocess with Stockfish evals: `python sft/preprocess.py --config configs/sft/config_with_eval.yaml --output ./data/chess_with_eval`
 

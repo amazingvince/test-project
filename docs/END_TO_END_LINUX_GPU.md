@@ -81,11 +81,14 @@ Notes:
 
 ### Option A: Fast SFT (streaming, no Stockfish)
 
-Streaming from HF (no local dataset, no Stockfish reasoning traces):
+Streaming from HF (no local dataset). This does not run Stockfish by default:
 
 ```bash
 python sft/train.py --config configs/sft/config_sft.yaml --streaming
 ```
+
+If you want *distill-style reasoning traces* in streaming SFT, enable `reasoning_trace.enabled: true`
+and provide `stockfish` settings (this is much slower).
 
 ### Option B: SFT with distill-style reasoning traces (recommended)
 

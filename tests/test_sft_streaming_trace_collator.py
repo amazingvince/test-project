@@ -1,11 +1,10 @@
 import chess
+import importlib.util
 import pytest
 
 from src.distill.reasoning_trace import ReasoningTraceGenerator
 from src.distill.stockfish_teacher import MoveAnalysis, PositionAnalysis
-from src.sft import streaming_trace_collator
-
-StreamingSFTStockfishTraceCollator = streaming_trace_collator.StreamingSFTStockfishTraceCollator
+from src.sft.streaming_trace_collator import StreamingSFTStockfishTraceCollator
 
 
 class TinyTokenizer:
@@ -70,7 +69,7 @@ def make_analysis(board: chess.Board) -> PositionAnalysis:
 
 
 def test_streaming_sft_stockfish_trace_collator_builds_batch():
-    if streaming_trace_collator.torch is None:
+    if importlib.util.find_spec("torch") is None:
         pytest.skip("torch is not installed in this environment")
     board = chess.Board()
     analysis = make_analysis(board)
@@ -96,8 +95,7 @@ def test_streaming_sft_stockfish_trace_collator_builds_batch():
 
     collator = StreamingSFTStockfishTraceCollator(
         tokenizer=tokenizer,
-        teacher=teacher,  # type: ignore[arg-type]
-        config={"loss_weighting": {"enabled": False}},
+        teacher=teacher,
         reasoning_trace_generator=trace_gen,
         max_length=512,
         pad_to_multiple_of=8,
