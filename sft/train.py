@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+import chess
 from datasets import load_from_disk, Dataset
 from transformers import (
     AutoModelForCausalLM,
@@ -628,13 +629,6 @@ def load_or_create_dataset(
         return dataset, None
     
     if streaming:
-        if reasoning_cfg.get("enabled"):
-            print(
-                "Note: reasoning_trace.enabled is set, but streaming SFT does not run Stockfish and "
-                "cannot generate distill-style reasoning traces. Use `sft/preprocess.py` with a "
-                "Stockfish-enabled config (e.g. `configs/sft/config_with_eval.yaml`) and train from "
-                "`--preprocessed_path` instead."
-            )
         print("Creating streaming dataset...")
         train_dataset = create_streaming_dataset(
             games_ratio=data_config.get('games_ratio', 0.7),
@@ -756,11 +750,15 @@ def create_trainer(
     config: Dict[str, Any],
     streaming: bool = False,
     use_cce: bool = True,
-    chess_eval_callback: Optional[TrainerCallback] = None
+    chess_eval_callback: Optional[TrainerCallback] = None,
+    stockfish_teacher: Optional[Any] = None,
+    reasoning_trace_generator: Optional[Any] = None,
 ):
     """Create optimized trainer."""
     training_config = config.get('training', {})
     model_config = config.get('model', {})
+    formatting_config = config.get("formatting", {})
+    reasoning_cfg = config.get("reasoning_trace", {})
     
     max_steps = training_config.get('max_steps', -1)
     if streaming and max_steps <= 0:
@@ -843,12 +841,35 @@ def create_trainer(
         include_num_input_tokens_seen=True,
     )
     
-    # Data collator with prompt masking
-    data_collator = SFTDataCollatorWithPromptMasking(
-        tokenizer=tokenizer,
-        max_length=model_config.get('max_seq_length', 1024),
-        pad_to_multiple_of=8,
-    )
+    # Data collator
+    data_collator: Any
+    if streaming and reasoning_cfg.get("enabled") and stockfish_teacher is not None:
+        from src.sft.streaming_trace_collator import StreamingSFTStockfishTraceCollator
+
+        data_collator = StreamingSFTStockfishTraceCollator(
+            tokenizer=tokenizer,
+            teacher=stockfish_teacher,
+            config=config,
+            reasoning_trace_generator=reasoning_trace_generator,
+            max_length=model_config.get("max_seq_length", 1024),
+            pad_to_multiple_of=8,
+            include_board=bool(formatting_config.get("include_board", False)),
+            max_display_moves=int(formatting_config.get("max_display_moves", 5)),
+            randomize_order=bool(formatting_config.get("randomize_order", True)),
+            pv_length=int(formatting_config.get("pv_length", 5)),
+            force_best_move=bool(
+                reasoning_cfg.get("always_choose_best_move", False)
+                or config.get("data", {}).get("target_move") == "best"
+            ),
+            seed=int(training_config.get("seed", 42)),
+        )
+        print("Streaming SFT: Stockfish + reasoning traces enabled (batch-time analysis).")
+    else:
+        data_collator = SFTDataCollatorWithPromptMasking(
+            tokenizer=tokenizer,
+            max_length=model_config.get('max_seq_length', 1024),
+            pad_to_multiple_of=8,
+        )
     
     callbacks = []
     if chess_eval_callback is not None:
@@ -1026,6 +1047,46 @@ def main():
                 print("Stockfish not found - ACPL metrics disabled")
     
     print("\nCreating trainer...")
+    stockfish_teacher = None
+    reasoning_trace_generator = None
+    reasoning_cfg = config.get("reasoning_trace", {})
+    if args.streaming and reasoning_cfg.get("enabled"):
+        from src.distill.reasoning_trace import ReasoningTraceGenerator
+        from src.utils.stockfish_teacher_factory import create_stockfish_teacher
+
+        stockfish_cfg = config.get("stockfish", {})
+        distill_cfg = config.get("distillation", {})
+
+        print("\nInitializing StockfishTeacher for streaming SFT traces...")
+        stockfish_teacher = create_stockfish_teacher(
+            stockfish_config=stockfish_cfg,
+            distillation_config=distill_cfg,
+        )
+        print("StockfishTeacher created")
+        print("  Initializing Stockfish workers...")
+        _ = stockfish_teacher.analyze_position(chess.STARTING_FEN)
+        print("  Workers ready")
+
+        reasoning_trace_generator = ReasoningTraceGenerator(
+            reasoning_cfg,
+            tokenizer=tokenizer,
+        )
+        trace_status = reasoning_trace_generator.status()
+        opening_detail = ""
+        if not trace_status.get("opening_available"):
+            opening_detail = trace_status.get("opening_error") or "unavailable"
+        tablebase_detail = ""
+        if not trace_status.get("tablebase_available"):
+            tablebase_detail = trace_status.get("tablebase_error") or "unavailable"
+        print(
+            "Reasoning trace enabled: "
+            f"opening={trace_status.get('opening_available')}"
+            + (f" ({opening_detail})" if opening_detail else "")
+            + ", "
+            f"tablebase={trace_status.get('tablebase_available')}"
+            + (f" ({tablebase_detail})" if tablebase_detail else "")
+        )
+
     trainer = create_trainer(
         model=model,
         tokenizer=tokenizer,
@@ -1034,7 +1095,9 @@ def main():
         config=config,
         streaming=args.streaming,
         use_cce=use_cce,
-        chess_eval_callback=chess_eval_callback
+        chess_eval_callback=chess_eval_callback,
+        stockfish_teacher=stockfish_teacher,
+        reasoning_trace_generator=reasoning_trace_generator,
     )
     
     resume_checkpoint = args.resume

@@ -1470,76 +1470,50 @@ def main():
     # Initialize StockfishTeacher for streaming mode
     teacher = None
     if args.streaming:
-        stockfish_config = config.get('stockfish', {})
+        stockfish_config = config.get("stockfish", {})
 
-        # Find Stockfish path
-        sf_path = stockfish_config.get('path')
-        if not sf_path:
-            possible_paths = [
-                shutil.which('stockfish'),
-                '/usr/bin/stockfish',
-                '/usr/games/stockfish',
-                '/usr/local/bin/stockfish',
-                '/opt/homebrew/bin/stockfish',
-            ]
-            for path in possible_paths:
-                if path and Path(path).exists():
-                    sf_path = path
-                    break
+        from src.utils.stockfish_teacher_factory import (
+            create_stockfish_teacher,
+            normalize_stockfish_teacher_config,
+        )
 
-        if not sf_path:
-            raise FileNotFoundError(
-                "Stockfish not found. Install with: sudo apt install stockfish (Linux) or brew install stockfish (macOS)"
-            )
+        teacher_cfg = normalize_stockfish_teacher_config(
+            stockfish_config=stockfish_config,
+            distillation_config=distill_config,
+            require_path=True,
+        )
 
         print(f"\nInitializing StockfishTeacher...")
-        print(f"  Path: {sf_path}")
-        print(f"  Workers: {stockfish_config.get('num_workers', 8)}")
-        print(f"  Threads/worker: {stockfish_config.get('threads_per_worker', 1)}")
-        print(f"  Depth: {stockfish_config.get('depth', 12)}")
-        if stockfish_config.get('time_limit_ms') is not None:
-            print(f"  Time limit: {stockfish_config.get('time_limit_ms')}ms")
-        if stockfish_config.get('nodes') is not None:
-            print(f"  Nodes: {stockfish_config.get('nodes')}")
-        print(f"  Top-k: {stockfish_config.get('top_k', 5)}")
-        if stockfish_config.get('shallow_depth', 0):
-            print(f"  Shallow depth: {stockfish_config.get('shallow_depth')}")
-            if stockfish_config.get('shallow_max_moves') is not None:
-                print(f"  Shallow max moves: {stockfish_config.get('shallow_max_moves')}")
-        if stockfish_config.get('confirm_depth', 0):
-            print(f"  Confirm depth: {stockfish_config.get('confirm_depth')}")
-            print(f"  Confirm top-k: {stockfish_config.get('confirm_top_k', 0)}")
-        print(f"  Prob mode: {stockfish_config.get('prob_mode', 'cp')}")
-        if stockfish_config.get('prob_mode', 'cp') == 'wdl':
-            print(f"  WDL temperature: {stockfish_config.get('wdl_temperature', 1.0)}")
-        if stockfish_config.get('cache_size', 0):
-            print(f"  Cache size: {stockfish_config.get('cache_size')}")
-        if stockfish_config.get('syzygy_path'):
-            print(f"  Syzygy path: {stockfish_config.get('syzygy_path')}")
+        print(f"  Path: {teacher_cfg.stockfish_path}")
+        print(f"  Workers: {teacher_cfg.num_workers}")
+        print(f"  Threads/worker: {teacher_cfg.threads_per_worker}")
+        print(f"  Depth: {teacher_cfg.depth}")
+        if teacher_cfg.time_limit_ms is not None:
+            print(f"  Time limit: {teacher_cfg.time_limit_ms}ms")
+        if teacher_cfg.nodes is not None:
+            print(f"  Nodes: {teacher_cfg.nodes}")
+        print(f"  Top-k: {teacher_cfg.top_k}")
+        if teacher_cfg.shallow_depth:
+            print(f"  Shallow depth: {teacher_cfg.shallow_depth}")
+            if teacher_cfg.shallow_max_moves is not None:
+                print(f"  Shallow max moves: {teacher_cfg.shallow_max_moves}")
+        if teacher_cfg.confirm_depth:
+            print(f"  Confirm depth: {teacher_cfg.confirm_depth}")
+            print(f"  Confirm top-k: {teacher_cfg.confirm_top_k}")
+        print(f"  Prob mode: {teacher_cfg.prob_mode}")
+        if teacher_cfg.prob_mode == "wdl":
+            print(f"  WDL temperature: {teacher_cfg.wdl_temperature}")
+        if teacher_cfg.cache_size:
+            print(f"  Cache size: {teacher_cfg.cache_size}")
+        if teacher_cfg.syzygy_path:
+            print(f"  Syzygy path: {teacher_cfg.syzygy_path}")
 
-        teacher = StockfishTeacher(
-            stockfish_path=sf_path,
-            num_workers=stockfish_config.get('num_workers', 8),
-            depth=stockfish_config.get('depth', 12),
-            top_k=stockfish_config.get('top_k', 5),
-            hash_mb_per_worker=stockfish_config.get('hash_mb_per_worker', 64),
-            temperature=distill_config.get('stockfish_temperature', 100.0),
-            min_probability=distill_config.get('min_probability', 0.001),
-            threads_per_worker=stockfish_config.get('threads_per_worker', 1),
-            time_limit_ms=stockfish_config.get('time_limit_ms'),
-            nodes=stockfish_config.get('nodes'),
-            shallow_depth=stockfish_config.get('shallow_depth', 0),
-            shallow_max_moves=stockfish_config.get('shallow_max_moves'),
-            confirm_depth=stockfish_config.get('confirm_depth', 0),
-            confirm_top_k=stockfish_config.get('confirm_top_k', 0),
-            prob_mode=stockfish_config.get('prob_mode', 'cp'),
-            wdl_temperature=stockfish_config.get('wdl_temperature', 1.0),
-            cache_size=stockfish_config.get('cache_size', 0),
-            syzygy_path=stockfish_config.get('syzygy_path'),
+        teacher = create_stockfish_teacher(
+            stockfish_config=stockfish_config,
+            distillation_config=distill_config,
         )
         print("StockfishTeacher created")
 
-        # Pre-initialize workers and test with a simple position
         print("  Initializing Stockfish workers...")
         test_analysis = teacher.analyze_position(chess.STARTING_FEN)
         print(f"  Workers ready (test: best={test_analysis.best_move_san})")

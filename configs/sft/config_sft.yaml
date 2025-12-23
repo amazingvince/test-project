@@ -192,6 +192,36 @@ evaluation:
   stockfish_workers: 8
 
 # =============================================================================
+# Optional: Stockfish teacher for streaming reasoning traces
+# =============================================================================
+# If you set `reasoning_trace.enabled: true` while using `--streaming`, SFT will
+# run Stockfish in the data collator to generate distill-style reasoning traces.
+# This is much slower than plain streaming SFT, but keeps the training template
+# aligned with distillation/eval.
+stockfish:
+  path: null
+  num_workers: 8
+  threads_per_worker: 1
+  depth: 12
+  top_k: 5
+  hash_mb_per_worker: 64
+  shallow_depth: 0
+  shallow_max_moves: null
+  confirm_depth: 0
+  confirm_top_k: 0
+  prob_mode: "cp"
+  wdl_temperature: 1.0
+  cache_size: 0
+  syzygy_path: null
+
+distillation:
+  stockfish_temperature: 100.0
+  min_probability: 0.001
+
+reasoning_trace:
+  enabled: false
+
+# =============================================================================
 # Output Configuration
 # =============================================================================
 output:
